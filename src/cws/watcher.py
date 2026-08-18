@@ -7,6 +7,7 @@ from .models import (
     Assessment,
     BrowserObservation,
     LsmObservation,
+    NetworkObservation,
     SupervisorState,
     TaskRecord,
     WorkspaceObservation,
@@ -16,6 +17,7 @@ from .models import (
 @dataclass(slots=True)
 class WatchPolicy:
     browser_suspect_after_s: float = 120.0
+    network_suspect_after_s: float = 180.0
     lsm_suspect_after_s: float = 180.0
     hard_stall_after_s: float = 600.0
 
@@ -26,6 +28,7 @@ def assess(
     lsm: LsmObservation | None,
     *,
     workspace: WorkspaceObservation | None = None,
+    network: NetworkObservation | None = None,
     now: float | None = None,
     policy: WatchPolicy | None = None,
 ) -> Assessment:
@@ -113,6 +116,17 @@ def assess(
         if browser.pending_tool_calls is not None:
             evidence.append(f"browser.pending_tool_calls={browser.pending_tool_calls}")
 
+    network_silence = None
+    if network:
+        network_age = max(0.0, now - network.observed_at)
+        evidence.append(f"network.observation_age_s={network_age:.0f}")
+        if network.quiet_since_at is not None:
+            network_silence = max(0.0, now - network.quiet_since_at)
+            evidence.append(f"network.silence_s={network_silence:.0f}")
+        evidence.append(f"network.sample_events={network.event_count}")
+        if network.loading_failed:
+            evidence.append(f"network.loading_failed={network.loading_failed}")
+
     lsm_silence = None
     if lsm and lsm.recent_event_at is not None:
         lsm_silence = max(0.0, now - lsm.recent_event_at)
@@ -152,6 +166,14 @@ def assess(
         )
 
     if lsm and lsm.plan_status == "active" and lsm.continuation_due:
+        if network_silence is not None and network_silence < policy.network_suspect_after_s:
+            return Assessment(
+                SupervisorState.RECONCILING,
+                "Goal lease is due but network lifecycle activity is recent; evidence conflicts, so do not race the worker",
+                "medium",
+                evidence,
+                requires_reconcile=True,
+            )
         return Assessment(
             SupervisorState.SUSPECT,
             "Goal plan execution lease expired with no durable work in flight",
@@ -161,12 +183,31 @@ def assess(
         )
 
     stale_browser = dom_silence is not None and dom_silence >= policy.browser_suspect_after_s
+    stale_network = (
+        network_silence is not None and network_silence >= policy.network_suspect_after_s
+    )
     stale_lsm = lsm_silence is not None and lsm_silence >= policy.lsm_suspect_after_s
     if stale_browser and stale_lsm:
-        hard = max(dom_silence or 0, lsm_silence or 0) >= policy.hard_stall_after_s
+        if network_silence is not None and not stale_network:
+            return Assessment(
+                SupervisorState.RECONCILING,
+                "DOM and LSM are silent but network lifecycle activity is recent; reconcile conflicting evidence before recovery",
+                "medium",
+                evidence,
+                requires_reconcile=True,
+            )
+        silences = [dom_silence, lsm_silence]
+        if network_silence is not None:
+            silences.append(network_silence)
+        hard = min(value for value in silences if value is not None) >= policy.hard_stall_after_s
+        reason = (
+            "browser DOM, network lifecycle, and durable LSM activity are silent"
+            if network_silence is not None
+            else "both browser DOM and durable LSM activity are silent"
+        )
         return Assessment(
             SupervisorState.SUSPECT,
-            "both browser DOM and durable LSM activity are silent",
+            reason,
             "high" if hard else "medium",
             evidence,
             requires_reconcile=True,

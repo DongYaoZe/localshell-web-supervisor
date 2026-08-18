@@ -66,9 +66,12 @@ The observed hardened deployment stores state at `C:\ProgramData\LocalShellMCP-H
 
 LSM's high-level Playwright manager already offers persistent profiles, storage state, page snapshots, DOM actions, page errors, `requestfailed`, and recent response metadata. However its browser-session registry lives in process memory, is capped at 8 sessions, and idle-cleans after one hour. Therefore LSM browser `session_id` is not a durable task identity.
 
-V0 consumes normalized DOM observations. It does not click `continue` automatically.
+V0 consumes normalized DOM observations. V1 adds two safe observation routes without changing execution transport:
 
-V1 should add a probe that records timestamps for:
+- exact-URL Windows UI Automation for the user-authorized selected tab in normal Chrome;
+- Network-domain lifecycle metadata for CWS-owned or explicitly exposed CDP pages.
+
+V1 records timestamps for:
 
 - request/fetch/XHR start and completion/failure;
 - streaming response activity / byte progress when observable;
@@ -77,7 +80,7 @@ V1 should add a probe that records timestamps for:
 - DOM mutation/activity silence;
 - composer and tool-card contradiction states.
 
-Observation comes before transport reimplementation.
+It does not retain request/response bodies, auth headers/cookies, or private ChatGPT payloads. Observation comes before transport reimplementation.
 
 ## Heartbeat model
 
@@ -89,7 +92,7 @@ A task has multiple clocks:
 - Goal plan `last_agent_activity` and its execution lease;
 - in-flight tool-call heartbeat;
 - tracked job update/status timestamps;
-- V1 network activity timestamp.
+- V1 network activity and conservative continuous-quiet baseline.
 
 A heartbeat is evidence, not a completion marker. CWS classifies from the combination.
 
@@ -106,6 +109,12 @@ Hard fences:
 - never compete with an LSM continuation already pending;
 - never replay a tool merely because its UI card is still `ing`;
 - cap recovery attempts and escalate ambiguity to `NEEDS_HUMAN`.
+
+V1 makes `RECONCILE` durable. A reconciliation record stores a sanitized snapshot of
+worker identity, browser signature/state, optional network timing, LSM run/plan/in-flight
+facts, checkpoint digest, and Git/workspace digest. The canonical snapshot produces a
+deterministic `fence_token`. A future action must refresh the evidence and prove the fence
+still matches immediately before dispatch; a fence is not itself permission to act.
 
 ## RAM / concurrency model
 
@@ -150,7 +159,9 @@ process tree. See `LSM_FINDINGS.md` for the bootstrap experiment that motivated 
 DOM + LSM durable telemetry + registry + deterministic watchdog + advisory recovery.
 
 ### V1
-Network/CDP observability + reconcile executor + guarded LSM takeover + scheduler. Recovery actions remain fenced and budgeted.
+Read-only exact-URL UIA + optional CDP network lifecycle observation + three-signal
+classification + durable reconciliation fences. Recovery dispatch remains disabled until
+the browser-worker identity/action boundary and revalidation rules are proven in isolation.
 
 ### V2
 Low-memory browser orchestration: active-worker pool, probe-page reuse, parking, load shedding, RAM telemetry.

@@ -11,11 +11,14 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .browser import observation_from_dom_payload, observation_from_lsm_snapshot
+from .cdp import CdpNetworkProbe, CdpProbeUnavailable
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .models import SupervisorState
+from .reconcile import build_reconciliation_record
 from .recovery import recommend
 from .registry import Registry
 from .scheduler import attention_queue
+from .uia import ChromeUiaProbe, UiaProbeUnavailable
 from .watcher import WatchPolicy, assess
 from .workspace import WorkspaceProbe
 
@@ -49,14 +52,25 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("inspect", help="reconcile one task from durable evidence")
     inspect.add_argument("task_id")
     inspect.add_argument("--json", action="store_true")
+    inspect.add_argument(
+        "--uia",
+        action="store_true",
+        help="refresh the current worker from the existing Chrome UI Automation tree first",
+    )
 
     watch = sub.add_parser("watch", help="scan all tasks and print only attention-worthy items")
     watch.add_argument("--json", action="store_true")
     watch.add_argument("--once", action="store_true", help="scan once instead of staying resident")
     watch.add_argument("--interval", type=float, default=30.0, help="seconds between scans")
     watch.add_argument("--browser-suspect-after", type=float, default=120.0)
+    watch.add_argument("--network-suspect-after", type=float, default=180.0)
     watch.add_argument("--lsm-suspect-after", type=float, default=180.0)
     watch.add_argument("--hard-stall-after", type=float, default=600.0)
+    watch.add_argument(
+        "--uia",
+        action="store_true",
+        help="refresh matching workers from existing Chrome via read-only UI Automation",
+    )
 
     worker = sub.add_parser("add-worker", help="attach a new conversation worker lease")
     worker.add_argument("task_id")
@@ -77,6 +91,21 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("task_id")
     history.add_argument("--limit", type=int, default=20)
 
+    reconcile = sub.add_parser(
+        "reconcile",
+        help="refresh evidence and persist a sanitized recovery fence for one task",
+    )
+    reconcile.add_argument("task_id")
+    reconcile.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
+    reconcile.add_argument("--json", action="store_true")
+
+    reconcile_history = sub.add_parser(
+        "reconciliation-history",
+        help="show durable sanitized reconciliation/fence records",
+    )
+    reconcile_history.add_argument("task_id")
+    reconcile_history.add_argument("--limit", type=int, default=20)
+
     dom = sub.add_parser("observe-dom", help="ingest a DOM probe JSON object/file")
     dom.add_argument("worker_id")
     group = dom.add_mutually_exclusive_group(required=True)
@@ -92,8 +121,31 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_group.add_argument("--json", dest="json_text")
     snapshot_group.add_argument("--file")
 
+    uia = sub.add_parser(
+        "probe-uia",
+        help="read the current task's existing Chrome tab through Windows UI Automation",
+    )
+    uia.add_argument("task_id")
+    uia.add_argument("--json", action="store_true")
+    uia.add_argument("--timeout", type=float, default=8.0)
+
+    cdp = sub.add_parser(
+        "probe-cdp",
+        help="sample network lifecycle events from an explicitly exposed CDP browser",
+    )
+    cdp.add_argument("task_id")
+    cdp.add_argument("--endpoint", required=True)
+    cdp.add_argument("--sample", type=float, default=2.0)
+    cdp.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="explicitly allow a non-loopback CDP endpoint; loopback is the safe default",
+    )
+    cdp.add_argument("--json", action="store_true")
+
     rec = sub.add_parser("recommend", help="print safe recovery recommendation for a task")
     rec.add_argument("task_id")
+    rec.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
     rec.add_argument("--json", action="store_true")
     return p
 
@@ -133,6 +185,17 @@ def _workspace_semantic_signature(obs) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _refresh_uia(registry: Registry, task_id: str, probe: ChromeUiaProbe):
+    task = registry.get_task(task_id)
+    if not task.current_worker_id:
+        raise UiaProbeUnavailable("task has no current conversation worker")
+    worker = registry.get_worker(task.current_worker_id)
+    previous = registry.latest_browser_observation(worker.worker_id)
+    obs = probe.observe(worker, previous=previous)
+    registry.record_browser_observation(obs)
+    return obs
+
+
 def _refresh_workspace(registry: Registry, task_id: str, probe: WorkspaceProbe):
     task = registry.get_task(task_id)
     previous = registry.latest_workspace_observation(task_id)
@@ -150,29 +213,79 @@ def _assessment(
     task_id: str,
     adapter,
     workspace_probe: WorkspaceProbe,
+    uia_probe: ChromeUiaProbe | None = None,
     policy: WatchPolicy | None = None,
     *,
     reconcile_workspace: bool = False,
+    refresh_uia: bool = False,
 ):
     task = registry.get_task(task_id)
     lsm = _refresh_lsm(registry, task_id, adapter)
+    if refresh_uia and uia_probe is not None:
+        try:
+            _refresh_uia(registry, task_id, uia_probe)
+        except UiaProbeUnavailable:
+            pass
     browser = registry.latest_browser_observation(task.current_worker_id)
-    result = assess(task, browser, lsm, policy=policy)
+    network = registry.latest_network_observation(task.current_worker_id)
+    result = assess(task, browser, lsm, network=network, policy=policy)
     workspace = None
     if reconcile_workspace or result.requires_reconcile:
         workspace = _refresh_workspace(registry, task_id, workspace_probe)
-        result = assess(task, browser, lsm, workspace=workspace, policy=policy)
+        result = assess(
+            task,
+            browser,
+            lsm,
+            workspace=workspace,
+            network=network,
+            policy=policy,
+        )
     if result.state != task.state and result.confidence in {"high", "medium"}:
         registry.update_state(task_id, result.state)
         task = registry.get_task(task_id)
     return task, browser, lsm, workspace, result
 
 
-def _scan_attention(registry: Registry, adapter, workspace_probe: WorkspaceProbe, policy: WatchPolicy):
+def _record_current_reconciliation(
+    registry: Registry,
+    task,
+    browser,
+    lsm,
+    workspace,
+    result,
+):
+    network = registry.latest_network_observation(task.current_worker_id)
+    record = build_reconciliation_record(
+        task,
+        result,
+        browser=browser,
+        network=network,
+        lsm=lsm,
+        workspace=workspace,
+    )
+    registry.record_reconciliation(record)
+    return record
+
+
+def _scan_attention(
+    registry: Registry,
+    adapter,
+    workspace_probe: WorkspaceProbe,
+    policy: WatchPolicy,
+    *,
+    uia_probe: ChromeUiaProbe | None = None,
+    refresh_uia: bool = False,
+):
     assessed = []
     for task in registry.list_tasks():
         refreshed, _browser, _lsm, _workspace, result = _assessment(
-            registry, task.task_id, adapter, workspace_probe, policy
+            registry,
+            task.task_id,
+            adapter,
+            workspace_probe,
+            uia_probe,
+            policy,
+            refresh_uia=refresh_uia,
         )
         assessed.append((refreshed, result))
     return attention_queue(assessed)
@@ -255,6 +368,12 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(registry.recovery_history(args.task_id, args.limit))
             return 0
 
+        if args.command == "reconciliation-history":
+            _print_json(
+                [asdict(row) for row in registry.reconciliation_history(args.task_id, args.limit)]
+            )
+            return 0
+
         if args.command == "observe-dom":
             payload = (
                 json.loads(args.json_text)
@@ -283,6 +402,70 @@ def main(argv: list[str] | None = None) -> int:
             print("recorded")
             return 0
 
+        if args.command == "probe-uia":
+            obs = _refresh_uia(
+                registry,
+                args.task_id,
+                ChromeUiaProbe(timeout_s=args.timeout),
+            )
+            if args.json:
+                _print_json(asdict(obs))
+            else:
+                print(
+                    f"recorded UIA observation for {args.task_id}: "
+                    f"generating={obs.generating} send_ready={obs.send_button_ready} "
+                    f"url={obs.url}"
+                )
+            return 0
+
+        if args.command == "probe-cdp":
+            task = registry.get_task(args.task_id)
+            if not task.current_worker_id:
+                raise CdpProbeUnavailable("task has no current conversation worker")
+            worker = registry.get_worker(task.current_worker_id)
+            previous = registry.latest_network_observation(worker.worker_id)
+            obs = CdpNetworkProbe(
+                args.endpoint,
+                sample_s=args.sample,
+                allow_remote=args.allow_remote,
+            ).sample(worker, previous=previous)
+            registry.record_network_observation(obs)
+            if args.json:
+                _print_json(asdict(obs))
+            else:
+                print(
+                    f"recorded CDP sample for {args.task_id}: events={obs.event_count} "
+                    f"data_bytes={obs.encoded_data_bytes} failures={obs.loading_failed}"
+                )
+            return 0
+
+        if args.command == "reconcile":
+            task, browser, lsm, workspace, result = _assessment(
+                registry,
+                args.task_id,
+                adapter,
+                workspace_probe,
+                ChromeUiaProbe() if args.uia else None,
+                reconcile_workspace=True,
+                refresh_uia=args.uia,
+            )
+            record = _record_current_reconciliation(
+                registry,
+                task,
+                browser,
+                lsm,
+                workspace,
+                result,
+            )
+            if args.json:
+                _print_json(asdict(record))
+            else:
+                print(
+                    f"{record.reconcile_id} {record.state} [{record.confidence}] "
+                    f"fence={record.fence_token[:16]} {record.reason}"
+                )
+            return 0
+
         if args.command == "status":
             rows = registry.list_tasks()
             if args.json:
@@ -300,11 +483,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.task_id,
                 adapter,
                 workspace_probe,
+                ChromeUiaProbe() if args.uia else None,
                 reconcile_workspace=True,
+                refresh_uia=args.uia,
             )
             payload = {
                 "task": asdict(task),
                 "browser": asdict(browser) if browser else None,
+                "network": (
+                    asdict(registry.latest_network_observation(task.current_worker_id))
+                    if registry.latest_network_observation(task.current_worker_id)
+                    else None
+                ),
                 "lsm": asdict(lsm) if lsm else None,
                 "workspace": asdict(workspace) if workspace else None,
                 "assessment": asdict(result),
@@ -318,12 +508,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "recommend":
-            task, _browser, lsm, workspace, result = _assessment(
+            task, browser, lsm, workspace, result = _assessment(
                 registry,
                 args.task_id,
                 adapter,
                 workspace_probe,
+                ChromeUiaProbe() if args.uia else None,
                 reconcile_workspace=True,
+                refresh_uia=args.uia,
+            )
+            reconciliation = _record_current_reconciliation(
+                registry,
+                task,
+                browser,
+                lsm,
+                workspace,
+                result,
             )
             rec = recommend(task, result, lsm, workspace)
             registry.record_recovery_event(
@@ -331,7 +531,12 @@ def main(argv: list[str] | None = None) -> int:
                 action=rec.action,
                 safe_to_dispatch=rec.safe_to_dispatch,
                 reason=rec.reason,
-                payload={"assessment": asdict(result), "prompt": rec.prompt},
+                payload={
+                    "assessment": asdict(result),
+                    "prompt": rec.prompt,
+                    "reconcile_id": reconciliation.reconcile_id,
+                    "fence_token": reconciliation.fence_token,
+                },
             )
             if args.json:
                 _print_json(asdict(rec))
@@ -346,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "watch":
             policy = WatchPolicy(
                 browser_suspect_after_s=args.browser_suspect_after,
+                network_suspect_after_s=args.network_suspect_after,
                 lsm_suspect_after_s=args.lsm_suspect_after,
                 hard_stall_after_s=args.hard_stall_after,
             )
@@ -381,7 +587,14 @@ def main(argv: list[str] | None = None) -> int:
                     ):
                         print("watchdog lease lost; exiting to prevent duplicate control", file=sys.stderr)
                         return 5
-                    queue = _scan_attention(registry, adapter, workspace_probe, policy)
+                    queue = _scan_attention(
+                        registry,
+                        adapter,
+                        workspace_probe,
+                        policy,
+                        uia_probe=ChromeUiaProbe() if args.uia else None,
+                        refresh_uia=args.uia,
+                    )
                     signature = _attention_signature(queue)
                     if args.once or signature != last_signature:
                         _emit_attention(queue, as_json=args.json)
@@ -403,6 +616,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Local Shell MCP state is incompatible: {exc}", file=sys.stderr)
         print("Refusing to classify or recover from an unknown durable schema.", file=sys.stderr)
         return 3
+    except UiaProbeUnavailable as exc:
+        print(f"UI Automation probe unavailable: {exc}", file=sys.stderr)
+        return 6
+    except CdpProbeUnavailable as exc:
+        print(f"CDP probe unavailable: {exc}", file=sys.stderr)
+        return 7
     except (ValueError, json.JSONDecodeError) as exc:
         print(f"invalid input: {exc}", file=sys.stderr)
         return 2

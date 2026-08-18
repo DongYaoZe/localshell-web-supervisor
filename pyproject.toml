@@ -12,6 +12,9 @@ license = {text = "MIT"}
 authors = [{name = "chatgpt-web-supervisor contributors"}]
 dependencies = []
 
+[project.optional-dependencies]
+cdp = ["playwright>=1.50"]
+
 [project.scripts]
 cws = "cws.cli:main"
 

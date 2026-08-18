@@ -6,7 +6,7 @@ The central rule is:
 
 > **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. V0 observes browser/DOM evidence and Local Shell MCP durable telemetry, classifies task health, and recommends conservative recovery only after reconciliation.
+CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current V1 combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, and actual workspace/Git state. Recovery remains reconcile-first and advisory.
 
 ## Why
 
@@ -15,20 +15,24 @@ Long ChatGPT Web turns can fail independently of local side effects. A tool may 
 CWS separates three truth domains:
 
 1. **ChatGPT UI/DOM** — what the page currently renders.
-2. **ChatGPT transport activity** — V1 will add richer network/CDP evidence.
+2. **ChatGPT transport activity** — optional V1 CDP/network lifecycle evidence when CWS safely owns or is explicitly allowed to observe a DevTools endpoint.
 3. **Local Shell MCP durable execution state** — logical sessions, Goal plans, in-flight tool leases, tracked jobs, and workspace checkpoints.
 
 Completion and recovery decisions are never based on the Send/Stop button alone.
 
-## Current V0
+## Current V1
 
-V0 is intentionally advisory and safe:
+V1 is intentionally advisory and safe:
 
 - SQLite task/worker registry;
 - durable task identity independent of conversation URL;
 - direct **read-only** ingestion of Local Shell MCP file-state sessions/plans/jobs;
 - read-only workspace reconciliation (cwd, Git HEAD, dirty/status digest);
 - DOM observation and LSM browser-snapshot normalization boundary;
+- exact-URL, read-only Windows UI Automation observation of an existing authenticated Chrome tab;
+- optional CDP Network-domain lifecycle telemetry that stores no headers, cookies, POST data, or response bodies;
+- three-signal stall classification across browser/DOM, optional network lifecycle, and durable LSM state;
+- durable sanitized reconciliation records with deterministic evidence `fence_token`s;
 - deterministic health classifier;
 - low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
 - conservative recovery recommendation and idempotent recovery prompt;
@@ -49,9 +53,10 @@ python -m cws register `
   --conversation-url https://chatgpt.com/c/example
 
 python -m cws status
-python -m cws inspect example
+python -m cws inspect example --uia
 python -m cws watch --once
-python -m cws recommend example
+python -m cws reconcile example --uia
+python -m cws recommend example --uia
 ```
 
 For browser telemetry, `cws observe-dom` ingests the transport-neutral V0 probe shape and
@@ -93,13 +98,17 @@ The initial implementation was grounded against Local Shell MCP **v4.0.1**, not 
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/V0_SPEC.md`](docs/V0_SPEC.md).
 
+V1 browser/network/reconcile details are in [`docs/V1_SPEC.md`](docs/V1_SPEC.md),
+[`docs/NETWORK_OBSERVABILITY.md`](docs/NETWORK_OBSERVABILITY.md), and
+[`docs/SAFETY.md`](docs/SAFETY.md).
+
 ## Safety boundary
 
-CWS V0 never treats `continue` as idempotent. Before any recovery, it asks for reconciliation against durable LSM state and the actual workspace. Automatic recovery is deferred until the system can prove a recovery action is fenced, budgeted, and safe.
+CWS never treats `continue` as idempotent. Before any recovery, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. It does not copy authentication state, bypass access controls, or reconstruct private ChatGPT endpoints. Automatic recovery is deferred until the system can prove an action is fenced, budgeted, and safe.
 
 ## Roadmap
 
 - **V0:** DOM + LSM telemetry + registry + watchdog + recovery recommendations.
-- **V1:** CDP/network observability, robust reconcile, guarded takeover, deterministic scheduler.
+- **V1:** read-only UIA/CDP observability + three-signal classification + durable reconciliation fences. Implemented; recovery dispatch remains disabled.
 - **V2:** low-RAM browser orchestration, active-worker pool, parked conversations, probe-page reuse.
 - **V3:** only if evidence demands it, minimal Web transport research; private API reimplementation is not the default direction.

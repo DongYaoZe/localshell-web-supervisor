@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS browser_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_browser_obs_worker_time
     ON browser_observations(worker_id, observed_at DESC);
+CREATE TABLE IF NOT EXISTS network_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    observed_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_network_obs_worker_time
+    ON network_observations(worker_id, observed_at DESC);
 CREATE TABLE IF NOT EXISTS lsm_observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
@@ -61,6 +69,18 @@ CREATE TABLE IF NOT EXISTS workspace_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_obs_task_time
     ON workspace_observations(task_id, observed_at DESC);
+CREATE TABLE IF NOT EXISTS reconciliation_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reconcile_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    state TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    fence_token TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_task_time
+    ON reconciliation_records(task_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS recovery_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,

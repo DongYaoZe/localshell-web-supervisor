@@ -68,6 +68,28 @@ class BrowserObservation:
 
 
 @dataclass(slots=True)
+class NetworkObservation:
+    worker_id: str
+    observed_at: float
+    source: str
+    sample_started_at: float
+    sample_ended_at: float
+    page_url: str | None = None
+    event_count: int = 0
+    request_count: int = 0
+    response_count: int = 0
+    data_event_count: int = 0
+    encoded_data_bytes: int = 0
+    loading_finished: int = 0
+    loading_failed: int = 0
+    websocket_frames: int = 0
+    last_activity_at: float | None = None
+    quiet_since_at: float | None = None
+    inflight_requests: int = 0
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class LsmObservation:
     task_id: str
     observed_at: float
@@ -114,6 +136,21 @@ class Assessment:
     evidence: list[str] = field(default_factory=list)
     requires_reconcile: bool = False
     may_auto_continue: bool = False
+
+
+@dataclass(slots=True)
+class ReconciliationRecord:
+    reconcile_id: str
+    task_id: str
+    created_at: float
+    state: str
+    confidence: str
+    reason: str
+    requires_reconcile: bool
+    current_worker_id: str | None
+    fence_token: str
+    evidence: list[str] = field(default_factory=list)
+    snapshot: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

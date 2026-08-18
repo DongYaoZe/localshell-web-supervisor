@@ -10,6 +10,7 @@ from .models import (
     TaskRecord,
     WorkspaceObservation,
 )
+from .prompts import with_safety_preamble
 
 RECOVERY_PROMPT = """Resume the existing task.
 
@@ -100,12 +101,14 @@ def recommend(
             "durable LSM work/continuation is active; takeover or continue is unsafe",
             evidence=assessment.evidence,
         )
-    prompt = RECOVERY_PROMPT.format(
-        task_id=task.task_id,
-        session_id=task.lsm_session_id,
-        cwd=task.cwd,
-        checkpoint=json.dumps(task.checkpoint, ensure_ascii=False, sort_keys=True),
-        workspace=_workspace_summary(workspace),
+    prompt = with_safety_preamble(
+        RECOVERY_PROMPT.format(
+            task_id=task.task_id,
+            session_id=task.lsm_session_id,
+            cwd=task.cwd,
+            checkpoint=json.dumps(task.checkpoint, ensure_ascii=False, sort_keys=True),
+            workspace=_workspace_summary(workspace),
+        )
     )
     return RecoveryRecommendation(
         task.task_id,

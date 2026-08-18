@@ -1,6 +1,12 @@
 import unittest
 
-from cws.models import BrowserObservation, LsmObservation, SupervisorState, TaskRecord
+from cws.models import (
+    BrowserObservation,
+    LsmObservation,
+    NetworkObservation,
+    SupervisorState,
+    TaskRecord,
+)
 from cws.recovery import recommend
 from cws.watcher import WatchPolicy, assess
 
@@ -40,6 +46,30 @@ def lsm(**kw):
     )
     base.update(kw)
     return LsmObservation(**base)
+
+
+def network(**kw):
+    base = dict(
+        worker_id="w1",
+        observed_at=NOW,
+        source="cdp",
+        sample_started_at=NOW - 2,
+        sample_ended_at=NOW,
+        page_url="https://chatgpt.com/c/x",
+        event_count=0,
+        request_count=0,
+        response_count=0,
+        data_event_count=0,
+        encoded_data_bytes=0,
+        loading_finished=0,
+        loading_failed=0,
+        websocket_frames=0,
+        last_activity_at=None,
+        quiet_since_at=NOW - 2,
+        inflight_requests=0,
+    )
+    base.update(kw)
+    return NetworkObservation(**base)
 
 
 class WatcherTests(unittest.TestCase):
@@ -89,6 +119,66 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result.state, SupervisorState.SUSPECT)
         self.assertTrue(result.requires_reconcile)
 
+    def test_recent_network_activity_conflicts_with_due_goal_lease(self):
+        result = assess(
+            task(),
+            None,
+            lsm(continuation_due=True, recent_event_at=NOW - 1000),
+            network=network(
+                event_count=5,
+                last_activity_at=NOW - 5,
+                quiet_since_at=NOW - 5,
+            ),
+            now=NOW,
+        )
+        self.assertEqual(result.state, SupervisorState.RECONCILING)
+        self.assertTrue(result.requires_reconcile)
+        self.assertIn("network lifecycle activity is recent", result.reason)
+
+    def test_recent_network_activity_does_not_prove_running(self):
+        browser = BrowserObservation(
+            worker_id="w1",
+            observed_at=NOW,
+            generating=None,
+            send_button_ready=None,
+            last_dom_change_at=NOW - 400,
+        )
+        result = assess(
+            task(),
+            browser,
+            lsm(recent_event_at=NOW - 400),
+            network=network(
+                event_count=4,
+                last_activity_at=NOW - 5,
+                quiet_since_at=NOW - 5,
+            ),
+            now=NOW,
+        )
+        self.assertEqual(result.state, SupervisorState.RECONCILING)
+        self.assertNotEqual(result.state, SupervisorState.RUNNING)
+
+    def test_triple_silence_is_high_confidence_suspect(self):
+        browser = BrowserObservation(
+            worker_id="w1",
+            observed_at=NOW,
+            generating=None,
+            send_button_ready=None,
+            last_dom_change_at=NOW - 800,
+        )
+        result = assess(
+            task(),
+            browser,
+            lsm(recent_event_at=NOW - 800),
+            network=network(
+                last_activity_at=NOW - 800,
+                quiet_since_at=NOW - 800,
+            ),
+            now=NOW,
+        )
+        self.assertEqual(result.state, SupervisorState.SUSPECT)
+        self.assertEqual(result.confidence, "high")
+        self.assertIn("network lifecycle", result.reason)
+
     def test_completed_plan_is_completion_evidence(self):
         result = assess(task(), None, lsm(plan_status="completed"), now=NOW)
         self.assertEqual(result.state, SupervisorState.COMPLETED)
@@ -101,6 +191,8 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(rec.action, "reconcile_then_continue")
         self.assertFalse(rec.safe_to_dispatch)
         self.assertIn("Do not repeat completed operations", rec.prompt)
+        self.assertIn("Do not bypass authentication or platform controls", rec.prompt)
+        self.assertIn("Do not access, copy, or move cookies", rec.prompt)
 
 
 if __name__ == "__main__":

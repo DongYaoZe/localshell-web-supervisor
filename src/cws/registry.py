@@ -10,6 +10,8 @@ from .db import connect
 from .models import (
     BrowserObservation,
     LsmObservation,
+    NetworkObservation,
+    ReconciliationRecord,
     SupervisorState,
     TaskRecord,
     WorkspaceObservation,
@@ -105,6 +107,45 @@ class Registry:
             (json.dumps(checkpoint, ensure_ascii=False), time.time(), task_id),
         )
         self._conn.commit()
+
+    def record_reconciliation(self, record: ReconciliationRecord) -> None:
+        self.get_task(record.task_id)
+        payload = asdict(record)
+        self._conn.execute(
+            """INSERT INTO reconciliation_records
+               (reconcile_id, task_id, created_at, state, confidence, fence_token, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                record.reconcile_id,
+                record.task_id,
+                record.created_at,
+                record.state,
+                record.confidence,
+                record.fence_token,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        self._conn.commit()
+
+    def latest_reconciliation(self, task_id: str) -> ReconciliationRecord | None:
+        self.get_task(task_id)
+        row = self._conn.execute(
+            """SELECT payload_json FROM reconciliation_records
+               WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT 1""",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ReconciliationRecord(**json.loads(row["payload_json"]))
+
+    def reconciliation_history(self, task_id: str, limit: int = 20) -> list[ReconciliationRecord]:
+        self.get_task(task_id)
+        rows = self._conn.execute(
+            """SELECT payload_json FROM reconciliation_records
+               WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT ?""",
+            (task_id, max(1, min(limit, 200))),
+        ).fetchall()
+        return [ReconciliationRecord(**json.loads(row["payload_json"])) for row in rows]
 
     def record_recovery_event(
         self,
@@ -344,6 +385,34 @@ class Registry:
         if row is None:
             return None
         return BrowserObservation(**json.loads(row["payload_json"]))
+
+    def record_network_observation(self, obs: NetworkObservation) -> None:
+        payload = asdict(obs)
+        self._conn.execute(
+            "INSERT INTO network_observations(worker_id, observed_at, payload_json) VALUES (?, ?, ?)",
+            (obs.worker_id, obs.observed_at, json.dumps(payload, ensure_ascii=False)),
+        )
+        self._conn.execute(
+            """DELETE FROM network_observations
+               WHERE worker_id = ? AND id NOT IN (
+                   SELECT id FROM network_observations
+                   WHERE worker_id = ? ORDER BY observed_at DESC, id DESC LIMIT ?
+               )""",
+            (obs.worker_id, obs.worker_id, OBSERVATION_RETENTION_PER_ENTITY),
+        )
+        self._conn.commit()
+
+    def latest_network_observation(self, worker_id: str | None) -> NetworkObservation | None:
+        if not worker_id:
+            return None
+        row = self._conn.execute(
+            """SELECT payload_json FROM network_observations
+               WHERE worker_id = ? ORDER BY observed_at DESC LIMIT 1""",
+            (worker_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return NetworkObservation(**json.loads(row["payload_json"]))
 
     def record_lsm_observation(self, obs: LsmObservation) -> None:
         payload = asdict(obs)
