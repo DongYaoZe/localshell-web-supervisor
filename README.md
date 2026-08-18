@@ -116,9 +116,17 @@ not close pages.
 V3's private-transport NO-GO decision and deterministic dry-run dispatcher are documented
 in [`docs/V3_DECISION.md`](docs/V3_DECISION.md) and [`docs/V3_SPEC.md`](docs/V3_SPEC.md).
 
+For day-to-day use, see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). `cws doctor` is a
+read-only preflight for registry/LSM schema, RAM, watchdog lease, workspace/task state,
+and optional exact-URL UIA. It never repairs or changes browser/task state.
+
 ## Safety boundary
 
 CWS never treats `continue` as idempotent. Before any recovery, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. It does not copy authentication state, bypass access controls, or reconstruct private ChatGPT endpoints. Automatic recovery is deferred until the system can prove an action is fenced, budgeted, and safe.
+
+Browser telemetry is also data-minimized: UIA does not read the unsent prompt draft;
+`probe-uia` returns state/signature diagnostics rather than conversation text; persisted
+UIA/LSM snapshot raw metadata is reduced to the numeric/state fields needed by the watchdog.
 
 ## Roadmap
 

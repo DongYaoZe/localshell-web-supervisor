@@ -139,10 +139,9 @@ def dom_payload_from_lsm_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "raw": {
             "source": "lsm_browser_snapshot",
             "page_id": data.get("page_id"),
-            "title": data.get("title"),
             "text_truncated": truncated,
-            "snapshot_errors": (data.get("errors") or [])[-20:],
-            "snapshot_network": (data.get("network") or [])[-30:],
+            "snapshot_error_count": len(data.get("errors") or []),
+            "snapshot_network_event_count": len(data.get("network") or []),
         },
     }
     if not truncated:

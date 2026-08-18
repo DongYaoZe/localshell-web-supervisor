@@ -43,6 +43,11 @@ class UiaNormalizationTests(unittest.TestCase):
         self.assertIn("Message delivery timed out", payload["visible_error"])
         self.assertEqual(payload["raw"]["source"], "windows_uia_chrome")
         self.assertEqual(payload["raw"]["browser_pid"], 123)
+        self.assertNotIn("window_title", payload["raw"])
+        self.assertNotIn("selected_tab_label", payload["raw"])
+        self.assertNotIn("tool_status_labels", payload["raw"])
+        self.assertNotIn("prompt_value", payload["raw"])
+        self.assertEqual(payload["visible_error"], "Message delivery timed out")
 
     def test_payload_detects_ready_send_control(self):
         result = {

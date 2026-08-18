@@ -21,6 +21,14 @@ Permitted read-only observation paths include:
 - a dedicated CWS-controlled Playwright/browser profile created through ordinary user authentication;
 - bounded DOM/network lifecycle metadata needed to determine liveness and silence.
 
+For Windows UI Automation, CWS transiently reads accessibility text only to derive the
+latest-message signature/error/liveness state. It does **not** read the unsent prompt
+textarea, and `probe-uia` does not return conversation text. Persisted UIA metadata is
+limited to state/signature plus numeric process/element counters needed by the supervisor.
+
+For LSM high-level browser snapshots, CWS does not persist the recent error/network entry
+payloads; it retains only counts and the bounded state needed for classification.
+
 CWS must not:
 
 - read or copy browser cookie databases, authentication tokens, session secrets, or passwords;
@@ -58,6 +66,11 @@ Hard fences:
 - Do not terminate unrelated processes. Test-process cleanup must use a unique command line/PID created by the same experiment.
 - Production CWS hosting should be independent of a ChatGPT conversation and should use its own singleton watchdog lease.
 - Page-close/RAM experiments must use dedicated harmless workers until it is proven that closing a page cannot damage a live task.
+
+`cws doctor` is intentionally diagnostic-only. It may read registry/LSM schema, local
+workspace/Git state, RAM/process working-set counters, watchdog lease state, and optionally
+the exact registered URL through UIA; it never performs repair, installation, process
+control, browser navigation, or recovery dispatch.
 
 ## Agent / supervisor prompt preamble
 

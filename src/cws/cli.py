@@ -10,8 +10,10 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
+from . import __version__
 from .browser import observation_from_dom_payload, observation_from_lsm_snapshot
 from .dispatcher import DispatchPolicy, build_dispatch_plan
+from .doctor import DoctorStatus, run_doctor
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
@@ -34,7 +36,8 @@ def default_db_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe V0)")
+    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe V3)")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=None, help="registry sqlite path (default: .cws/registry.sqlite3)")
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
     p.add_argument("--git-bin", default=None, help="git executable used for read-only workspace reconciliation")
@@ -164,6 +167,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     ram = sub.add_parser("ram-status", help="show system and aggregate Chrome working-set telemetry")
     ram.add_argument("--json", action="store_true")
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="run read-only operational checks; never repairs or changes browser/task state",
+    )
+    doctor.add_argument("--task", dest="task_id")
+    doctor.add_argument(
+        "--uia",
+        action="store_true",
+        help="also read the exact registered Chrome URL through read-only UI Automation",
+    )
+    doctor.add_argument("--json", action="store_true")
 
     dispatch = sub.add_parser(
         "dispatch-plan",
@@ -532,6 +547,21 @@ def main(argv: list[str] | None = None) -> int:
                         f"working_set={browser_memory.total_working_set_bytes / (1024**3):.2f} GiB"
                     )
             return 0
+
+        if args.command == "doctor":
+            report = run_doctor(
+                registry,
+                lsm_state_dir=args.lsm_state_dir,
+                task_id=args.task_id,
+                probe_uia=args.uia,
+            )
+            if args.json:
+                _print_json(asdict(report))
+            else:
+                print(f"CWS doctor {report.version}: {report.overall.value}")
+                for check in report.checks:
+                    print(f"{check.status.value:4} {check.name:24} {check.detail}")
+            return 1 if report.overall == DoctorStatus.FAIL else 0
 
         if args.command == "pool-plan":
             try:

@@ -75,8 +75,6 @@ foreach ($proc in $windows) {
     $texts = @()
     $visibleTexts = @()
     $buttons = @()
-    $toolLabels = @()
-    $promptValue = $null
     for ($i = 0; $i -lt $all.Count; $i++) {
         $e = $all.Item($i)
         $name = [string]$e.Current.Name
@@ -90,9 +88,6 @@ foreach ($proc in $windows) {
             if ($isVisible) {
                 $visibleTexts += $name
             }
-            if ($isVisible -and $name -match '^(Calling|Called|Running|Ran|Reading|Read|Writing|Wrote|Inspecting|Inspected|Searching|Searched|Thinking|Thought|Using|Used)\b') {
-                $toolLabels += $name
-            }
         }
         if ($type -eq 'ControlType.Button' -and $name) {
             $buttons += [pscustomobject]@{
@@ -101,9 +96,6 @@ foreach ($proc in $windows) {
                 enabled = [bool]$e.Current.IsEnabled
                 offscreen = [bool]$e.Current.IsOffscreen
             }
-        }
-        if ($type -eq 'ControlType.Edit' -and $e.Current.AutomationId -eq 'prompt-textarea') {
-            $promptValue = Get-Value $e
         }
     }
 
@@ -131,37 +123,16 @@ foreach ($proc in $windows) {
         $visibleTextTail = $visibleTextTail.Substring($visibleTextTail.Length - 8000)
     }
 
-    $tabCond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::TabItem
-    )
-    $tabs = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $tabCond)
-    $selectedTab = $null
-    foreach ($tab in $tabs) {
-        try {
-            $selection = $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
-            if ($selection -and $selection.Current.IsSelected) {
-                $selectedTab = [string]$tab.Current.Name
-                break
-            }
-        } catch {}
-    }
-
     $result = [pscustomobject]@{
         observed_at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
         browser_pid = [int]$proc.Id
-        window_title = [string]$root.Current.Name
         address = [string]$address
-        document_name = [string]$doc.Current.Name
         text_tail = [string]$textTail
         visible_text_tail = [string]$visibleTextTail
         text_elements = [int]$texts.Count
         visible_text_elements = [int]$visibleTexts.Count
         element_count = [int]$all.Count
         buttons = @($buttons)
-        tool_status_labels = @($toolLabels | Select-Object -Last 30)
-        prompt_value = $promptValue
-        selected_tab_label = $selectedTab
         process_working_set_bytes = [int64]$proc.WorkingSet64
     }
     break
@@ -218,7 +189,7 @@ def payload_from_uia_result(result: dict[str, Any]) -> dict[str, Any]:
     for marker in _ERROR_MARKERS:
         index = lower_tail.rfind(marker)
         if index >= 0:
-            visible_error = visible_text_tail[index : index + 240].splitlines()[0].strip()
+            visible_error = marker[:1].upper() + marker[1:]
             break
     address = str(result.get("address") or "").strip()
     url = address if re.match(r"^https?://", address, flags=re.IGNORECASE) else f"https://{address}"
@@ -242,13 +213,9 @@ def payload_from_uia_result(result: dict[str, Any]) -> dict[str, Any]:
         "raw": {
             "source": "windows_uia_chrome",
             "browser_pid": result.get("browser_pid"),
-            "window_title": result.get("window_title"),
-            "document_name": result.get("document_name"),
             "text_elements": result.get("text_elements"),
             "visible_text_elements": result.get("visible_text_elements"),
             "element_count": result.get("element_count"),
-            "tool_status_labels": result.get("tool_status_labels", []),
-            "selected_tab_label": result.get("selected_tab_label"),
             "process_working_set_bytes": result.get("process_working_set_bytes"),
         },
     }
@@ -327,13 +294,22 @@ class ChromeUiaProbe:
         return observation_from_dom_payload(worker.worker_id, payload, previous=previous)
 
     def inspect(self, worker: WorkerRecord) -> dict[str, Any]:
-        """Return a sanitized, non-cookie diagnostic view useful for CLI/debug output."""
+        """Return state/signature diagnostics without returning conversation or draft text."""
+        previous = None
         result = self.raw_probe(worker.conversation_url)
         payload = payload_from_uia_result(result)
-        payload["conversation_id"] = conversation_id_from_url(str(payload.get("url") or ""))
-        payload["raw"] = dict(payload.get("raw") or {})
-        payload["raw"].pop("prompt_value", None)
-        return payload
+        obs = observation_from_dom_payload(worker.worker_id, payload, previous=previous)
+        return {
+            "observed_at": obs.observed_at,
+            "url": obs.url,
+            "conversation_id": conversation_id_from_url(str(obs.url or "")),
+            "generating": obs.generating,
+            "send_button_ready": obs.send_button_ready,
+            "pending_tool_calls": obs.pending_tool_calls,
+            "visible_error": obs.visible_error,
+            "message_signature": obs.message_signature,
+            "raw": dict(obs.raw),
+        }
 
 
 def observation_dict(obs: BrowserObservation) -> dict[str, Any]:
