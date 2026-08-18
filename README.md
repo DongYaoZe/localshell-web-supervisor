@@ -102,6 +102,11 @@ V1 browser/network/reconcile details are in [`docs/V1_SPEC.md`](docs/V1_SPEC.md)
 [`docs/NETWORK_OBSERVABILITY.md`](docs/NETWORK_OBSERVABILITY.md), and
 [`docs/SAFETY.md`](docs/SAFETY.md).
 
+The V2 low-memory planner/page-pool layer is documented in
+[`docs/V2_SPEC.md`](docs/V2_SPEC.md). `cws ram-status` reports system/aggregate Chrome
+memory, while `cws pool-plan` produces `DO_NOT_CLOSE` / `PARK_CANDIDATE` advice. It does
+not close pages.
+
 ## Safety boundary
 
 CWS never treats `continue` as idempotent. Before any recovery, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. It does not copy authentication state, bypass access controls, or reconstruct private ChatGPT endpoints. Automatic recovery is deferred until the system can prove an action is fenced, budgeted, and safe.
@@ -110,5 +115,5 @@ CWS never treats `continue` as idempotent. Before any recovery, it requires reco
 
 - **V0:** DOM + LSM telemetry + registry + watchdog + recovery recommendations.
 - **V1:** read-only UIA/CDP observability + three-signal classification + durable reconciliation fences. Implemented; recovery dispatch remains disabled.
-- **V2:** low-RAM browser orchestration, active-worker pool, parked conversations, probe-page reuse.
+- **V2:** low-RAM worker planner, active/probe page-pool primitives, parked-worker bookkeeping, and RAM telemetry. Implemented conservatively; ChatGPT page-close dispatch remains disabled pending a dedicated authenticated experiment.
 - **V3:** only if evidence demands it, minimal Web transport research; private API reimplementation is not the default direction.

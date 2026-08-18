@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.models import BrowserObservation
+from cws.models import BrowserObservation, WorkerStatus
 from cws.registry import Registry
 
 
@@ -20,6 +20,11 @@ class RegistryTests(unittest.TestCase):
                     conversation_url="https://chatgpt.com/c/abc",
                 )
                 self.assertEqual(task.current_worker_id is not None, True)
+                parked = registry.set_worker_status(task.current_worker_id, WorkerStatus.PARKED)
+                self.assertEqual(parked.status, WorkerStatus.PARKED)
+                self.assertIsNone(parked.ended_at)
+                active = registry.set_worker_status(task.current_worker_id, WorkerStatus.ACTIVE)
+                self.assertEqual(active.status, WorkerStatus.ACTIVE)
                 registry.track_job("t1", "job_1")
                 self.assertEqual(registry.tracked_jobs("t1"), ["job_1"])
                 obs = BrowserObservation(

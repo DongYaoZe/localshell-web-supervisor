@@ -130,6 +130,18 @@ V2 target topology:
 
 Until those experiments exist, CWS must not assume a page is safe to close during execution.
 
+The implemented V2 control layer now makes that uncertainty explicit. `pool-plan` pins
+any worker with live/ambiguous task or LSM evidence and ranks only terminal/queued/blocked
+workers as parking candidates. Page closing is not performed. `PagePool` separately tracks
+ephemeral active/probe page leases, fails closed on capacity instead of evicting a page,
+and rotates parked worker URLs through a small reusable probe queue. Durable worker/task
+identity remains in SQLite, never in the browser page ID.
+
+System and aggregate Chrome working-set telemetry provide pressure evidence, but Chrome's
+multi-process model means a single window-process working set is not attributed to one tab.
+Memory pressure can change ranking/attention; it cannot override a `DO_NOT_CLOSE` liveness
+fence.
+
 ## Human-attention scheduling
 
 The output of the watchdog is an **attention queue**, not a mirror of every running worker. Healthy `RUNNING` and terminal tasks stay quiet. Priority is roughly:
@@ -164,7 +176,9 @@ classification + durable reconciliation fences. Recovery dispatch remains disabl
 the browser-worker identity/action boundary and revalidation rules are proven in isolation.
 
 ### V2
-Low-memory browser orchestration: active-worker pool, probe-page reuse, parking, load shedding, RAM telemetry.
+Low-memory worker planning + active/probe page lease pool + parking bookkeeping + RAM
+telemetry. Actual ChatGPT page-close/reopen behavior remains an experiment gate; a local
+harness validates methodology only and does not justify closing a live ChatGPT worker.
 
 ### V3
 Minimal Web transport research only if browser orchestration cannot meet reliability goals. Reimplementing ChatGPT private endpoints is explicitly not the default architecture.

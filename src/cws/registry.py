@@ -341,6 +341,17 @@ class Registry:
         ).fetchall()
         return [self.get_worker(row["worker_id"]) for row in rows]
 
+    def set_worker_status(self, worker_id: str, status: WorkerStatus) -> WorkerRecord:
+        """Update durable worker bookkeeping only; does not open/close a browser page."""
+        self.get_worker(worker_id)
+        ended_at = time.time() if status in {WorkerStatus.SUPERSEDED, WorkerStatus.DEAD} else None
+        self._conn.execute(
+            "UPDATE workers SET status = ?, ended_at = ? WHERE worker_id = ?",
+            (status.value, ended_at, worker_id),
+        )
+        self._conn.commit()
+        return self.get_worker(worker_id)
+
     def track_job(self, task_id: str, job_id: str) -> None:
         self.get_task(task_id)
         self._conn.execute(

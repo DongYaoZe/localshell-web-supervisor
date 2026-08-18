@@ -13,7 +13,9 @@ from pathlib import Path
 from .browser import observation_from_dom_payload, observation_from_lsm_snapshot
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
-from .models import SupervisorState
+from .orchestrator import BrowserPoolPolicy, plan_browser_pool
+from .models import SupervisorState, WorkerStatus
+from .ram import MemoryProbeUnavailable, observe_system_memory, observe_windows_process_group
 from .reconcile import build_reconciliation_record
 from .recovery import recommend
 from .registry import Registry
@@ -76,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("task_id")
     worker.add_argument("--conversation-url", required=True)
     worker.add_argument("--conversation-id")
+
+    worker_status = sub.add_parser(
+        "worker-status",
+        help="update worker bookkeeping only; does not open or close a browser page",
+    )
+    worker_status.add_argument("worker_id")
+    worker_status.add_argument("status", choices=[status.value for status in WorkerStatus])
 
     job = sub.add_parser("track-job", help="associate an LSM job id with a task")
     job.add_argument("task_id")
@@ -142,6 +151,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicitly allow a non-loopback CDP endpoint; loopback is the safe default",
     )
     cdp.add_argument("--json", action="store_true")
+
+    pool = sub.add_parser(
+        "pool-plan",
+        help="compute a read-only low-memory worker/page plan; never closes pages",
+    )
+    pool.add_argument("--max-active", type=int, default=4)
+    pool.add_argument("--min-free-mib", type=int, default=1024)
+    pool.add_argument("--high-memory-fraction", type=float, default=0.85)
+    pool.add_argument("--json", action="store_true")
+
+    ram = sub.add_parser("ram-status", help="show system and aggregate Chrome working-set telemetry")
+    ram.add_argument("--json", action="store_true")
 
     rec = sub.add_parser("recommend", help="print safe recovery recommendation for a task")
     rec.add_argument("task_id")
@@ -347,6 +368,14 @@ def main(argv: list[str] | None = None) -> int:
             print(worker.worker_id)
             return 0
 
+        if args.command == "worker-status":
+            worker = registry.set_worker_status(args.worker_id, WorkerStatus(args.status))
+            print(
+                f"{worker.worker_id} status={worker.status.value}; "
+                "registry bookkeeping only, no browser page was opened or closed"
+            )
+            return 0
+
         if args.command == "track-job":
             registry.track_job(args.task_id, args.job_id)
             print(f"tracked {args.job_id} for {args.task_id}")
@@ -464,6 +493,81 @@ def main(argv: list[str] | None = None) -> int:
                     f"{record.reconcile_id} {record.state} [{record.confidence}] "
                     f"fence={record.fence_token[:16]} {record.reason}"
                 )
+            return 0
+
+        if args.command == "ram-status":
+            system_memory = observe_system_memory()
+            browser_memory = (
+                observe_windows_process_group("chrome") if os.name == "nt" else None
+            )
+            payload = {
+                "system": asdict(system_memory),
+                "chrome": asdict(browser_memory) if browser_memory else None,
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                print(
+                    f"system used={system_memory.used_fraction:.1%} "
+                    f"available={system_memory.available_bytes / (1024**3):.2f} GiB"
+                )
+                if browser_memory:
+                    print(
+                        f"chrome processes={browser_memory.process_count} "
+                        f"working_set={browser_memory.total_working_set_bytes / (1024**3):.2f} GiB"
+                    )
+            return 0
+
+        if args.command == "pool-plan":
+            try:
+                system_memory = observe_system_memory()
+            except MemoryProbeUnavailable:
+                system_memory = None
+            try:
+                browser_memory = (
+                    observe_windows_process_group("chrome") if os.name == "nt" else None
+                )
+            except MemoryProbeUnavailable:
+                browser_memory = None
+            pool_rows = []
+            for task in registry.list_tasks():
+                worker = (
+                    registry.get_worker(task.current_worker_id)
+                    if task.current_worker_id
+                    else None
+                )
+                browser = registry.latest_browser_observation(task.current_worker_id)
+                lsm = _refresh_lsm(registry, task.task_id, adapter)
+                pool_rows.append((task, worker, browser, lsm))
+            policy = BrowserPoolPolicy(
+                max_active_workers=max(1, int(args.max_active)),
+                min_available_bytes=max(0, int(args.min_free_mib)) * 1024 * 1024,
+                high_memory_fraction=min(1.0, max(0.0, float(args.high_memory_fraction))),
+                page_close_experiment_passed=False,
+            )
+            plan = plan_browser_pool(
+                pool_rows,
+                system_memory=system_memory,
+                browser_memory=browser_memory,
+                policy=policy,
+            )
+            if args.json:
+                _print_json(asdict(plan))
+            else:
+                print(
+                    f"memory={plan.memory_pressure} workers={plan.active_worker_count} "
+                    f"pinned={plan.pinned_worker_count} "
+                    f"park_candidates={plan.park_candidate_count}"
+                )
+                for item in plan.items:
+                    print(
+                        f"{item.disposition.value:14} {item.task_id:20} "
+                        f"close_allowed={str(item.close_allowed).lower()}  {item.reason}"
+                    )
+                for note in plan.recommendations:
+                    print(f"recommendation: {note}")
+                for warning in plan.warnings:
+                    print(f"warning: {warning}")
             return 0
 
         if args.command == "status":
