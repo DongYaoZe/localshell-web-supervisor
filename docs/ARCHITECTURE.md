@@ -181,4 +181,9 @@ telemetry. Actual ChatGPT page-close/reopen behavior remains an experiment gate;
 harness validates methodology only and does not justify closing a live ChatGPT worker.
 
 ### V3
-Minimal Web transport research only if browser orchestration cannot meet reliability goals. Reimplementing ChatGPT private endpoints is explicitly not the default architecture.
+Evidence-based NO-GO on private ChatGPT endpoint reimplementation. V3 instead adds a
+mandatory two-sample semantic fence and deterministic dry-run dispatcher. Even a fully
+passing plan has `transport_enabled=false` / `would_dispatch=false`; the shipped code has
+no ChatGPT click/type/continue adapter and `execute_dispatch()` raises. Takeover remains
+blocked until a separately bound replacement worker and LSM-supported takeover transition
+can be proven safely in isolation. See `V3_DECISION.md` and `V3_SPEC.md`.

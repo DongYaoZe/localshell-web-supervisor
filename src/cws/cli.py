@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .browser import observation_from_dom_payload, observation_from_lsm_snapshot
+from .dispatcher import DispatchPolicy, build_dispatch_plan
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
@@ -164,6 +165,18 @@ def build_parser() -> argparse.ArgumentParser:
     ram = sub.add_parser("ram-status", help="show system and aggregate Chrome working-set telemetry")
     ram.add_argument("--json", action="store_true")
 
+    dispatch = sub.add_parser(
+        "dispatch-plan",
+        help="dry-run a fenced recovery action; V3 ships no action transport",
+    )
+    dispatch.add_argument("task_id")
+    dispatch.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
+    dispatch.add_argument("--max-fence-age", type=float, default=120.0)
+    dispatch.add_argument("--min-fence-separation", type=float, default=3.0)
+    dispatch.add_argument("--min-dom-quiet", type=float, default=5.0)
+    dispatch.add_argument("--min-network-quiet", type=float, default=5.0)
+    dispatch.add_argument("--json", action="store_true")
+
     rec = sub.add_parser("recommend", help="print safe recovery recommendation for a task")
     rec.add_argument("task_id")
     rec.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
@@ -276,9 +289,11 @@ def _record_current_reconciliation(
     result,
 ):
     network = registry.latest_network_observation(task.current_worker_id)
+    worker = registry.get_worker(task.current_worker_id) if task.current_worker_id else None
     record = build_reconciliation_record(
         task,
         result,
+        worker=worker,
         browser=browser,
         network=network,
         lsm=lsm,
@@ -609,6 +624,62 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{task.task_id}: {result.state.value} [{result.confidence}] - {result.reason}")
                 for item in result.evidence:
                     print(f"  - {item}")
+            return 0
+
+        if args.command == "dispatch-plan":
+            previous = registry.latest_reconciliation(args.task_id)
+            task, browser, lsm, workspace, result = _assessment(
+                registry,
+                args.task_id,
+                adapter,
+                workspace_probe,
+                ChromeUiaProbe() if args.uia else None,
+                reconcile_workspace=True,
+                refresh_uia=args.uia,
+            )
+            current = _record_current_reconciliation(
+                registry,
+                task,
+                browser,
+                lsm,
+                workspace,
+                result,
+            )
+            rec = recommend(task, result, lsm, workspace)
+            plan = build_dispatch_plan(
+                task,
+                rec,
+                previous=previous,
+                current=current,
+                policy=DispatchPolicy(
+                    max_reconciliation_age_s=max(1.0, float(args.max_fence_age)),
+                    min_reconciliation_separation_s=max(
+                        0.0, float(args.min_fence_separation)
+                    ),
+                    min_dom_quiet_s=max(0.0, float(args.min_dom_quiet)),
+                    min_network_quiet_s=max(0.0, float(args.min_network_quiet)),
+                    transport_enabled=False,
+                ),
+            )
+            registry.record_recovery_event(
+                task.task_id,
+                action=f"dispatch_plan:{plan.action.value}",
+                safe_to_dispatch=False,
+                reason=plan.reason,
+                payload={"dispatch_plan": asdict(plan)},
+            )
+            if args.json:
+                _print_json(asdict(plan))
+            else:
+                print(
+                    f"action={plan.action.value} candidate_ready={str(plan.candidate_ready).lower()} "
+                    f"would_dispatch={str(plan.would_dispatch).lower()}"
+                )
+                print(f"reason: {plan.reason}")
+                if plan.fence_token:
+                    print(f"fence: {plan.fence_token}")
+                for blocker in plan.blockers:
+                    print(f"blocker: {blocker}")
             return 0
 
         if args.command == "recommend":

@@ -13,6 +13,7 @@ from .models import (
     NetworkObservation,
     ReconciliationRecord,
     TaskRecord,
+    WorkerRecord,
     WorkspaceObservation,
 )
 
@@ -32,6 +33,7 @@ def build_reconciliation_record(
     task: TaskRecord,
     assessment: Assessment,
     *,
+    worker: WorkerRecord | None = None,
     browser: BrowserObservation | None,
     network: NetworkObservation | None,
     lsm: LsmObservation | None,
@@ -52,6 +54,16 @@ def build_reconciliation_record(
             "task_id": task.task_id,
             "state": task.state.value,
             "current_worker_id": task.current_worker_id,
+            "registered_worker_url": (
+                worker.conversation_url
+                if worker is not None and worker.worker_id == task.current_worker_id
+                else None
+            ),
+            "registered_worker_status": (
+                worker.status.value
+                if worker is not None and worker.worker_id == task.current_worker_id
+                else None
+            ),
             "lsm_session_id": task.lsm_session_id,
             "recovery_attempts": task.recovery_attempts,
             "max_recovery_attempts": task.max_recovery_attempts,
@@ -126,7 +138,7 @@ def build_reconciliation_record(
             else None
         ),
     }
-    fence_token = _digest_json(snapshot)
+    fence_token = _digest_json(_fence_material(snapshot))
     return ReconciliationRecord(
         reconcile_id=f"rec_{uuid.uuid4().hex[:16]}",
         task_id=task.task_id,
@@ -137,11 +149,42 @@ def build_reconciliation_record(
         requires_reconcile=assessment.requires_reconcile,
         current_worker_id=task.current_worker_id,
         fence_token=fence_token,
+        fence_version=2,
         evidence=list(assessment.evidence),
         snapshot=snapshot,
     )
 
 
+def _fence_material(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Strip sampling timestamps while preserving facts that affect action safety."""
+    task = dict(snapshot.get("task") or {})
+    browser = dict(snapshot.get("browser") or {}) if snapshot.get("browser") else None
+    network = dict(snapshot.get("network") or {}) if snapshot.get("network") else None
+    lsm = dict(snapshot.get("lsm") or {}) if snapshot.get("lsm") else None
+    workspace = dict(snapshot.get("workspace") or {}) if snapshot.get("workspace") else None
+
+    if browser is not None:
+        browser.pop("observed_at", None)
+    if network is not None:
+        network.pop("observed_at", None)
+    if lsm is not None:
+        lsm.pop("observed_at", None)
+    if workspace is not None:
+        workspace.pop("observed_at", None)
+
+    return {
+        "task": task,
+        "browser": browser,
+        "network": network,
+        "lsm": lsm,
+        "workspace": workspace,
+    }
+
+
 def fence_matches(a: ReconciliationRecord, b: ReconciliationRecord) -> bool:
-    """Return True only when two reconciliations describe the same actionable world state."""
-    return a.task_id == b.task_id and a.fence_token == b.fence_token
+    """Return True only for the same task, fence schema, and actionable world state."""
+    return (
+        a.task_id == b.task_id
+        and a.fence_version == b.fence_version
+        and a.fence_token == b.fence_token
+    )

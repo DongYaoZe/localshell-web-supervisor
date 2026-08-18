@@ -149,6 +149,7 @@ class ReconciliationRecord:
     requires_reconcile: bool
     current_worker_id: str | None
     fence_token: str
+    fence_version: int = 1
     evidence: list[str] = field(default_factory=list)
     snapshot: dict[str, Any] = field(default_factory=dict)
 

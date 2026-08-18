@@ -6,7 +6,7 @@ The central rule is:
 
 > **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current V1 combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, and actual workspace/Git state. Recovery remains reconcile-first and advisory.
+CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current V3 combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, and a disabled dry-run recovery dispatcher.
 
 ## Why
 
@@ -20,9 +20,9 @@ CWS separates three truth domains:
 
 Completion and recovery decisions are never based on the Send/Stop button alone.
 
-## Current V1
+## Current V3
 
-V1 is intentionally advisory and safe:
+V3 remains fail-closed and safe:
 
 - SQLite task/worker registry;
 - durable task identity independent of conversation URL;
@@ -33,6 +33,9 @@ V1 is intentionally advisory and safe:
 - optional CDP Network-domain lifecycle telemetry that stores no headers, cookies, POST data, or response bodies;
 - three-signal stall classification across browser/DOM, optional network lifecycle, and durable LSM state;
 - durable sanitized reconciliation records with deterministic evidence `fence_token`s;
+- system/aggregate Chrome RAM telemetry and conservative active/park/probe planning;
+- mandatory two-sample semantic-fence dispatch planning;
+- an audited `dispatch-plan` command whose action transport is hard-disabled;
 - deterministic health classifier;
 - low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
 - conservative recovery recommendation and idempotent recovery prompt;
@@ -57,6 +60,9 @@ python -m cws inspect example --uia
 python -m cws watch --once
 python -m cws reconcile example --uia
 python -m cws recommend example --uia
+python -m cws ram-status
+python -m cws pool-plan
+python -m cws dispatch-plan example --uia
 ```
 
 For browser telemetry, `cws observe-dom` ingests the transport-neutral V0 probe shape and
@@ -107,6 +113,9 @@ The V2 low-memory planner/page-pool layer is documented in
 memory, while `cws pool-plan` produces `DO_NOT_CLOSE` / `PARK_CANDIDATE` advice. It does
 not close pages.
 
+V3's private-transport NO-GO decision and deterministic dry-run dispatcher are documented
+in [`docs/V3_DECISION.md`](docs/V3_DECISION.md) and [`docs/V3_SPEC.md`](docs/V3_SPEC.md).
+
 ## Safety boundary
 
 CWS never treats `continue` as idempotent. Before any recovery, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. It does not copy authentication state, bypass access controls, or reconstruct private ChatGPT endpoints. Automatic recovery is deferred until the system can prove an action is fenced, budgeted, and safe.
@@ -116,4 +125,4 @@ CWS never treats `continue` as idempotent. Before any recovery, it requires reco
 - **V0:** DOM + LSM telemetry + registry + watchdog + recovery recommendations.
 - **V1:** read-only UIA/CDP observability + three-signal classification + durable reconciliation fences. Implemented; recovery dispatch remains disabled.
 - **V2:** low-RAM worker planner, active/probe page-pool primitives, parked-worker bookkeeping, and RAM telemetry. Implemented conservatively; ChatGPT page-close dispatch remains disabled pending a dedicated authenticated experiment.
-- **V3:** only if evidence demands it, minimal Web transport research; private API reimplementation is not the default direction.
+- **V3:** evidence says no private Web transport is currently needed; semantic two-phase fences + disabled dry-run recovery/takeover planning are implemented. There is still no automatic click/type/continue/takeover transport.

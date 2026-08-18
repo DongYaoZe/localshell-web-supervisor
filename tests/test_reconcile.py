@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from cws.models import (
@@ -45,10 +46,10 @@ def make_assessment():
     )
 
 
-def make_browser(signature="sig1"):
+def make_browser(signature="sig1", observed_at=NOW):
     return BrowserObservation(
         worker_id="w1",
-        observed_at=NOW,
+        observed_at=observed_at,
         url="https://chatgpt.com/c/x",
         generating=False,
         send_button_ready=True,
@@ -60,10 +61,10 @@ def make_browser(signature="sig1"):
     )
 
 
-def make_network(quiet_since=NOW - 30):
+def make_network(quiet_since=NOW - 30, observed_at=NOW):
     return NetworkObservation(
         worker_id="w1",
-        observed_at=NOW,
+        observed_at=observed_at,
         source="cdp",
         sample_started_at=NOW - 2,
         sample_ended_at=NOW,
@@ -75,10 +76,10 @@ def make_network(quiet_since=NOW - 30):
     )
 
 
-def make_lsm(run_id="r1"):
+def make_lsm(run_id="r1", observed_at=NOW):
     return LsmObservation(
         task_id="t1",
-        observed_at=NOW,
+        observed_at=observed_at,
         session_id="s1",
         session_status="active",
         active_run_id=run_id,
@@ -93,10 +94,10 @@ def make_lsm(run_id="r1"):
     )
 
 
-def make_workspace(head="abc"):
+def make_workspace(head="abc", observed_at=NOW):
     return WorkspaceObservation(
         task_id="t1",
-        observed_at=NOW,
+        observed_at=observed_at,
         cwd="C:/repo",
         cwd_exists=True,
         is_git_repo=True,
@@ -131,6 +132,42 @@ class ReconciliationTests(unittest.TestCase):
         self.assertNotEqual(a.reconcile_id, b.reconcile_id)
         self.assertEqual(a.fence_token, b.fence_token)
         self.assertTrue(fence_matches(a, b))
+
+    def test_sampling_times_do_not_invalidate_semantic_fence(self):
+        a = build_reconciliation_record(
+            make_task(),
+            make_assessment(),
+            browser=make_browser(observed_at=NOW),
+            network=make_network(observed_at=NOW),
+            lsm=make_lsm(observed_at=NOW),
+            workspace=make_workspace(observed_at=NOW),
+            created_at=NOW,
+        )
+        b = build_reconciliation_record(
+            make_task(),
+            make_assessment(),
+            browser=make_browser(observed_at=NOW + 20),
+            network=make_network(observed_at=NOW + 20),
+            lsm=make_lsm(observed_at=NOW + 20),
+            workspace=make_workspace(observed_at=NOW + 20),
+            created_at=NOW + 20,
+        )
+        self.assertEqual(a.fence_token, b.fence_token)
+        self.assertTrue(fence_matches(a, b))
+
+    def test_fence_schema_versions_never_cross_match(self):
+        current = build_reconciliation_record(
+            make_task(),
+            make_assessment(),
+            browser=make_browser(),
+            network=make_network(),
+            lsm=make_lsm(),
+            workspace=make_workspace(),
+            created_at=NOW,
+        )
+        legacy = replace(current, reconcile_id="rec_legacy", fence_version=1)
+        self.assertEqual(current.fence_version, 2)
+        self.assertFalse(fence_matches(legacy, current))
 
     def test_git_or_worker_evidence_change_invalidates_fence(self):
         base = build_reconciliation_record(
