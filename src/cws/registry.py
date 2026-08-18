@@ -1,0 +1,399 @@
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from dataclasses import asdict
+from pathlib import Path
+
+from .db import connect
+from .models import (
+    BrowserObservation,
+    LsmObservation,
+    SupervisorState,
+    TaskRecord,
+    WorkspaceObservation,
+    WorkerRecord,
+    WorkerStatus,
+)
+
+OBSERVATION_RETENTION_PER_ENTITY = 2000
+
+
+class Registry:
+    def __init__(self, db_path: str | Path):
+        self.db_path = Path(db_path)
+        self._conn = connect(self.db_path)
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def register_task(
+        self,
+        *,
+        task_id: str | None,
+        project: str,
+        objective: str,
+        cwd: str,
+        lsm_session_id: str | None = None,
+        conversation_url: str | None = None,
+        conversation_id: str | None = None,
+    ) -> TaskRecord:
+        now = time.time()
+        task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
+        self._conn.execute(
+            """INSERT INTO tasks
+               (task_id, project, objective, cwd, state, lsm_session_id,
+                checkpoint_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, '{}', ?, ?)""",
+            (
+                task_id,
+                project,
+                objective,
+                cwd,
+                SupervisorState.QUEUED.value,
+                lsm_session_id,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        task = self.get_task(task_id)
+        if conversation_url:
+            self.add_worker(
+                task_id,
+                conversation_url,
+                conversation_id=conversation_id,
+                make_current=True,
+            )
+            task = self.get_task(task_id)
+        return task
+
+    def get_task(self, task_id: str) -> TaskRecord:
+        row = self._conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown task: {task_id}")
+        return TaskRecord(
+            task_id=row["task_id"],
+            project=row["project"],
+            objective=row["objective"],
+            cwd=row["cwd"],
+            state=SupervisorState(row["state"]),
+            lsm_session_id=row["lsm_session_id"],
+            checkpoint=json.loads(row["checkpoint_json"] or "{}"),
+            current_worker_id=row["current_worker_id"],
+            recovery_attempts=row["recovery_attempts"],
+            max_recovery_attempts=row["max_recovery_attempts"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def list_tasks(self) -> list[TaskRecord]:
+        rows = self._conn.execute("SELECT task_id FROM tasks ORDER BY updated_at DESC").fetchall()
+        return [self.get_task(row["task_id"]) for row in rows]
+
+    def update_state(self, task_id: str, state: SupervisorState) -> None:
+        self._conn.execute(
+            "UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?",
+            (state.value, time.time(), task_id),
+        )
+        self._conn.commit()
+
+    def set_checkpoint(self, task_id: str, checkpoint: dict) -> None:
+        self._conn.execute(
+            "UPDATE tasks SET checkpoint_json = ?, updated_at = ? WHERE task_id = ?",
+            (json.dumps(checkpoint, ensure_ascii=False), time.time(), task_id),
+        )
+        self._conn.commit()
+
+    def record_recovery_event(
+        self,
+        task_id: str,
+        *,
+        action: str,
+        safe_to_dispatch: bool,
+        reason: str,
+        payload: dict,
+    ) -> None:
+        self.get_task(task_id)
+        self._conn.execute(
+            """INSERT INTO recovery_events
+               (task_id, created_at, action, safe_to_dispatch, reason, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                task_id,
+                time.time(),
+                action,
+                int(safe_to_dispatch),
+                reason,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        self._conn.commit()
+
+    def recovery_history(self, task_id: str, limit: int = 20) -> list[dict]:
+        self.get_task(task_id)
+        rows = self._conn.execute(
+            """SELECT created_at, action, safe_to_dispatch, reason, payload_json
+               FROM recovery_events WHERE task_id = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (task_id, max(1, min(limit, 200))),
+        ).fetchall()
+        return [
+            {
+                "created_at": row["created_at"],
+                "action": row["action"],
+                "safe_to_dispatch": bool(row["safe_to_dispatch"]),
+                "reason": row["reason"],
+                "payload": json.loads(row["payload_json"]),
+            }
+            for row in rows
+        ]
+
+    def acquire_watchdog_lease(
+        self,
+        *,
+        name: str,
+        owner_id: str,
+        pid: int,
+        host: str,
+        ttl_s: float,
+        now: float | None = None,
+    ) -> tuple[bool, dict]:
+        now = time.time() if now is None else float(now)
+        expires_at = now + max(1.0, float(ttl_s))
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM watchdog_leases WHERE name = ?", (name,)
+            ).fetchone()
+            if (
+                row is not None
+                and row["owner_id"] != owner_id
+                and float(row["expires_at"]) > now
+            ):
+                current = dict(row)
+                self._conn.rollback()
+                return False, current
+            started_at = (
+                float(row["started_at"])
+                if row is not None and row["owner_id"] == owner_id
+                else now
+            )
+            self._conn.execute(
+                """INSERT INTO watchdog_leases
+                   (name, owner_id, pid, host, started_at, heartbeat_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET
+                     owner_id = excluded.owner_id,
+                     pid = excluded.pid,
+                     host = excluded.host,
+                     started_at = excluded.started_at,
+                     heartbeat_at = excluded.heartbeat_at,
+                     expires_at = excluded.expires_at""",
+                (name, owner_id, int(pid), host, started_at, now, expires_at),
+            )
+            self._conn.commit()
+            return True, {
+                "name": name,
+                "owner_id": owner_id,
+                "pid": int(pid),
+                "host": host,
+                "started_at": started_at,
+                "heartbeat_at": now,
+                "expires_at": expires_at,
+            }
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def heartbeat_watchdog_lease(
+        self,
+        *,
+        name: str,
+        owner_id: str,
+        ttl_s: float,
+        now: float | None = None,
+    ) -> bool:
+        now = time.time() if now is None else float(now)
+        cursor = self._conn.execute(
+            """UPDATE watchdog_leases
+               SET heartbeat_at = ?, expires_at = ?
+               WHERE name = ? AND owner_id = ?""",
+            (now, now + max(1.0, float(ttl_s)), name, owner_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def release_watchdog_lease(self, *, name: str, owner_id: str) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM watchdog_leases WHERE name = ? AND owner_id = ?",
+            (name, owner_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def watchdog_lease(self, name: str = "default") -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM watchdog_leases WHERE name = ?", (name,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def add_worker(
+        self,
+        task_id: str,
+        conversation_url: str,
+        *,
+        conversation_id: str | None = None,
+        make_current: bool = True,
+    ) -> WorkerRecord:
+        self.get_task(task_id)
+        now = time.time()
+        worker_id = f"worker_{uuid.uuid4().hex[:12]}"
+        self._conn.execute(
+            """INSERT INTO workers
+               (worker_id, task_id, conversation_url, conversation_id, status, started_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                worker_id,
+                task_id,
+                conversation_url,
+                conversation_id,
+                WorkerStatus.ACTIVE.value,
+                now,
+            ),
+        )
+        if make_current:
+            old = self._conn.execute(
+                "SELECT current_worker_id FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()[0]
+            if old:
+                self._conn.execute(
+                    "UPDATE workers SET status = ?, ended_at = ? WHERE worker_id = ?",
+                    (WorkerStatus.SUPERSEDED.value, now, old),
+                )
+            self._conn.execute(
+                "UPDATE tasks SET current_worker_id = ?, updated_at = ? WHERE task_id = ?",
+                (worker_id, now, task_id),
+            )
+        self._conn.commit()
+        return self.get_worker(worker_id)
+
+    def get_worker(self, worker_id: str) -> WorkerRecord:
+        row = self._conn.execute("SELECT * FROM workers WHERE worker_id = ?", (worker_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown worker: {worker_id}")
+        return WorkerRecord(
+            worker_id=row["worker_id"],
+            task_id=row["task_id"],
+            conversation_url=row["conversation_url"],
+            conversation_id=row["conversation_id"],
+            status=WorkerStatus(row["status"]),
+            started_at=row["started_at"],
+            last_seen_at=row["last_seen_at"],
+            ended_at=row["ended_at"],
+        )
+
+    def workers_for_task(self, task_id: str) -> list[WorkerRecord]:
+        rows = self._conn.execute(
+            "SELECT worker_id FROM workers WHERE task_id = ? ORDER BY started_at DESC", (task_id,)
+        ).fetchall()
+        return [self.get_worker(row["worker_id"]) for row in rows]
+
+    def track_job(self, task_id: str, job_id: str) -> None:
+        self.get_task(task_id)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO task_jobs(task_id, job_id) VALUES (?, ?)", (task_id, job_id)
+        )
+        self._conn.commit()
+
+    def tracked_jobs(self, task_id: str) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT job_id FROM task_jobs WHERE task_id = ? ORDER BY job_id", (task_id,)
+        ).fetchall()
+        return [row["job_id"] for row in rows]
+
+    def record_browser_observation(self, obs: BrowserObservation) -> None:
+        payload = asdict(obs)
+        self._conn.execute(
+            "INSERT INTO browser_observations(worker_id, observed_at, payload_json) VALUES (?, ?, ?)",
+            (obs.worker_id, obs.observed_at, json.dumps(payload, ensure_ascii=False)),
+        )
+        self._conn.execute(
+            "UPDATE workers SET last_seen_at = ? WHERE worker_id = ?",
+            (obs.observed_at, obs.worker_id),
+        )
+        self._conn.execute(
+            """DELETE FROM browser_observations
+               WHERE worker_id = ? AND id NOT IN (
+                   SELECT id FROM browser_observations
+                   WHERE worker_id = ? ORDER BY observed_at DESC, id DESC LIMIT ?
+               )""",
+            (obs.worker_id, obs.worker_id, OBSERVATION_RETENTION_PER_ENTITY),
+        )
+        self._conn.commit()
+
+    def latest_browser_observation(self, worker_id: str | None) -> BrowserObservation | None:
+        if not worker_id:
+            return None
+        row = self._conn.execute(
+            """SELECT payload_json FROM browser_observations
+               WHERE worker_id = ? ORDER BY observed_at DESC LIMIT 1""",
+            (worker_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return BrowserObservation(**json.loads(row["payload_json"]))
+
+    def record_lsm_observation(self, obs: LsmObservation) -> None:
+        payload = asdict(obs)
+        self._conn.execute(
+            "INSERT INTO lsm_observations(task_id, observed_at, payload_json) VALUES (?, ?, ?)",
+            (obs.task_id, obs.observed_at, json.dumps(payload, ensure_ascii=False)),
+        )
+        self._conn.execute(
+            """DELETE FROM lsm_observations
+               WHERE task_id = ? AND id NOT IN (
+                   SELECT id FROM lsm_observations
+                   WHERE task_id = ? ORDER BY observed_at DESC, id DESC LIMIT ?
+               )""",
+            (obs.task_id, obs.task_id, OBSERVATION_RETENTION_PER_ENTITY),
+        )
+        self._conn.commit()
+
+    def latest_lsm_observation(self, task_id: str) -> LsmObservation | None:
+        row = self._conn.execute(
+            """SELECT payload_json FROM lsm_observations
+               WHERE task_id = ? ORDER BY observed_at DESC LIMIT 1""",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return LsmObservation(**json.loads(row["payload_json"]))
+
+    def record_workspace_observation(self, obs: WorkspaceObservation) -> None:
+        payload = asdict(obs)
+        self._conn.execute(
+            """INSERT INTO workspace_observations(task_id, observed_at, payload_json)
+               VALUES (?, ?, ?)""",
+            (obs.task_id, obs.observed_at, json.dumps(payload, ensure_ascii=False)),
+        )
+        self._conn.execute(
+            """DELETE FROM workspace_observations
+               WHERE task_id = ? AND id NOT IN (
+                   SELECT id FROM workspace_observations
+                   WHERE task_id = ? ORDER BY observed_at DESC, id DESC LIMIT ?
+               )""",
+            (obs.task_id, obs.task_id, OBSERVATION_RETENTION_PER_ENTITY),
+        )
+        self._conn.commit()
+
+    def latest_workspace_observation(self, task_id: str) -> WorkspaceObservation | None:
+        row = self._conn.execute(
+            """SELECT payload_json FROM workspace_observations
+               WHERE task_id = ? ORDER BY observed_at DESC LIMIT 1""",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return WorkspaceObservation(**json.loads(row["payload_json"]))

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chatgpt-web-supervisor"
+version = "0.1.0"
+description = "Local supervisor for durable ChatGPT Web + Local Shell MCP task execution"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "chatgpt-web-supervisor contributors"}]
+dependencies = []
+
+[project.scripts]
+cws = "cws.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
