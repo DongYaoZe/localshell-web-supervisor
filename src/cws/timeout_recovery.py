@@ -44,6 +44,36 @@ def is_recoverable_delivery_error(browser: BrowserObservation | None) -> bool:
     return any(known in marker for known in RECOVERABLE_DELIVERY_ERRORS)
 
 
+def error_shadowed_by_active_generation(
+    registry: Registry,
+    *,
+    task_id: str,
+    browser: BrowserObservation | None,
+) -> bool:
+    """Treat an error banner as stale/ambiguous after it coexists with a newer generation.
+
+    ChatGPT can leave an old delivery-timeout banner visible after the user has manually
+    sent a new turn. If the current contiguous run of the same visible error ever coexisted
+    with `generating=True`, resident recovery must not send again until that error disappears
+    (or changes) and a later fresh error is observed.
+    """
+
+    marker = normalized_visible_error(browser)
+    if browser is None or marker is None:
+        return False
+    task = registry.get_task(task_id)
+    worker_id = task.current_worker_id
+    if not worker_id or browser.worker_id != worker_id:
+        return True
+    for observed in registry.browser_observation_history(worker_id, limit=30):
+        observed_marker = normalized_visible_error(observed)
+        if observed_marker != marker:
+            break
+        if observed.generating is True:
+            return True
+    return False
+
+
 def acknowledged_state_is_unchanged(
     registry: Registry,
     *,
@@ -89,6 +119,11 @@ def gate_timeout_dispatch_plan(
         task_id=plan.task_id,
         browser=browser,
     )
+    checks["timeout_error_not_shadowed_by_newer_generation"] = not error_shadowed_by_active_generation(
+        registry,
+        task_id=plan.task_id,
+        browser=browser,
+    )
     recent = registry.action_attempts(plan.task_id, limit=1)
     last_action_at = recent[0].created_at if recent else None
     elapsed = current - float(last_action_at) if last_action_at is not None else None
@@ -103,6 +138,8 @@ def gate_timeout_dispatch_plan(
         blockers.append("no explicit recoverable ChatGPT Web delivery error is present")
     if not checks["timeout_state_not_already_acknowledged"]:
         blockers.append("current UI signature already has a positive recovery acknowledgement")
+    if not checks["timeout_error_not_shadowed_by_newer_generation"]:
+        blockers.append("visible delivery error coexisted with a newer active generation; wait for the stale banner to clear")
     if not checks["timeout_recovery_cooldown_elapsed"]:
         blockers.append("resident timeout recovery cooldown has not elapsed")
 

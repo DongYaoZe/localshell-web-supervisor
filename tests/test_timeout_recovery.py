@@ -34,12 +34,19 @@ class TimeoutRecoveryTests(unittest.TestCase):
         self.registry.close()
         self.tmp.cleanup()
 
-    def browser(self, *, error="Message delivery timed out", signature="timeout-signature"):
+    def browser(
+        self,
+        *,
+        error="Message delivery timed out",
+        signature="timeout-signature",
+        generating=False,
+        observed_at=NOW,
+    ):
         return BrowserObservation(
             worker_id=self.worker.worker_id,
-            observed_at=NOW,
+            observed_at=observed_at,
             url=self.worker.conversation_url,
-            generating=False,
+            generating=generating,
             send_button_ready=True,
             visible_error=error,
             last_dom_change_at=NOW - 30,
@@ -191,6 +198,57 @@ class TimeoutRecoveryTests(unittest.TestCase):
             now=NOW + 41,
         )
         self.assertTrue(allowed.checks["timeout_recovery_cooldown_elapsed"])
+
+    def test_old_error_banner_shadowed_by_newer_generation_cannot_trigger_recovery(self):
+        active = self.browser(
+            signature="manual-turn-generating",
+            generating=True,
+            observed_at=NOW - 2,
+        )
+        idle_same_error = self.browser(
+            signature="manual-turn-complete",
+            generating=False,
+            observed_at=NOW - 1,
+        )
+        self.registry.record_browser_observation(active)
+        self.registry.record_browser_observation(idle_same_error)
+
+        blocked = gate_timeout_dispatch_plan(
+            self.registry,
+            self.plan(),
+            browser=idle_same_error,
+            policy=TimeoutRecoveryPolicy(enabled=True, cooldown_s=0),
+            now=NOW,
+        )
+        self.assertFalse(blocked.candidate_ready)
+        self.assertFalse(
+            blocked.checks["timeout_error_not_shadowed_by_newer_generation"]
+        )
+
+        cleared = self.browser(
+            error=None,
+            signature="banner-cleared",
+            generating=False,
+            observed_at=NOW + 1,
+        )
+        fresh_timeout = self.browser(
+            signature="fresh-timeout",
+            generating=False,
+            observed_at=NOW + 2,
+        )
+        self.registry.record_browser_observation(cleared)
+        self.registry.record_browser_observation(fresh_timeout)
+        allowed = gate_timeout_dispatch_plan(
+            self.registry,
+            self.plan(),
+            browser=fresh_timeout,
+            policy=TimeoutRecoveryPolicy(enabled=True, cooldown_s=0),
+            now=NOW + 2,
+        )
+        self.assertTrue(
+            allowed.checks["timeout_error_not_shadowed_by_newer_generation"]
+        )
+        self.assertTrue(allowed.candidate_ready)
 
 
 if __name__ == "__main__":
