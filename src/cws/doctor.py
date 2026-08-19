@@ -151,7 +151,7 @@ def run_doctor(
         DoctorCheck(
             "recovery.transport",
             DoctorStatus.PASS,
-            "gated by default; execution requires explicit one-shot opt-in, exact task confirmation, and all fences",
+            "gated by default; execution is either explicit one-shot or explicitly opted-in recognized-timeout recovery, with all semantic/LSM/workspace/exact-window/action fences",
         )
     )
 

@@ -40,6 +40,17 @@ class WatchdogHostTests(unittest.TestCase):
         self.assertIn("--uia", command)
         self.assertNotIn("job_start", " ".join(command))
 
+    def test_timeout_autorecovery_command_is_explicit_and_forces_uia(self):
+        command = build_watchdog_command(
+            python_executable="python",
+            db_path="C:/repo/.cws/registry.sqlite3",
+            interval_s=30,
+            use_uia=False,
+            auto_recover_timeouts=True,
+        )
+        self.assertIn("--uia", command)
+        self.assertIn("--auto-recover-timeouts", command)
+
     def test_cooperative_stop_fences_old_and_new_owner(self):
         now = time.time()
         acquired, lease = self.registry.acquire_watchdog_lease(

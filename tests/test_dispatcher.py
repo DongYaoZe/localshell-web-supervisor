@@ -60,7 +60,14 @@ def assessment():
     )
 
 
-def browser(*, signature="sig", generating=False, send_ready=True, observed_at=NOW):
+def browser(
+    *,
+    signature="sig",
+    generating=False,
+    send_ready=True,
+    composer_present=True,
+    observed_at=NOW,
+):
     return BrowserObservation(
         worker_id="w1",
         observed_at=observed_at,
@@ -71,6 +78,7 @@ def browser(*, signature="sig", generating=False, send_ready=True, observed_at=N
         visible_error=None,
         last_dom_change_at=NOW - 100,
         message_signature=signature,
+        raw={"composer_present": composer_present},
     )
 
 
@@ -188,14 +196,35 @@ class DispatcherTests(unittest.TestCase):
         self.assertIn("LSM has an in-flight tool call", plan.blockers)
 
     def test_generating_or_unready_composer_blocks_dispatch(self):
-        previous = record(created_at=NOW - 20, browser_obs=browser(generating=True, send_ready=None))
-        current = record(created_at=NOW - 10, browser_obs=browser(generating=True, send_ready=None))
+        previous = record(
+            created_at=NOW - 20,
+            browser_obs=browser(generating=True, send_ready=None, composer_present=False),
+        )
+        current = record(
+            created_at=NOW - 10,
+            browser_obs=browser(generating=True, send_ready=None, composer_present=False),
+        )
         plan = build_dispatch_plan(
             task(), recommendation(), previous=previous, current=current, now=NOW
         )
         self.assertFalse(plan.candidate_ready)
         self.assertIn("browser still reports active generation", plan.blockers)
-        self.assertIn("no positive ready-Send/composer evidence", plan.blockers)
+        self.assertIn("no positive composer-presence evidence", plan.blockers)
+
+    def test_empty_but_present_composer_is_recovery_candidate(self):
+        previous = record(
+            created_at=NOW - 20,
+            browser_obs=browser(send_ready=False, composer_present=True),
+        )
+        current = record(
+            created_at=NOW - 10,
+            browser_obs=browser(send_ready=False, composer_present=True),
+        )
+        plan = build_dispatch_plan(
+            task(), recommendation(), previous=previous, current=current, now=NOW
+        )
+        self.assertTrue(plan.candidate_ready)
+        self.assertTrue(plan.checks["composer_available"])
 
     def test_recent_network_activity_blocks_dispatch_when_network_is_observed(self):
         previous = record(created_at=NOW - 20, network_obs=network(quiet_since=NOW - 1))

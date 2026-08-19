@@ -1,6 +1,6 @@
 # Operations runbook
 
-This runbook describes the CWS 0.8 control plane. Observation and planning remain the default; recovery mutation is an explicit one-shot operation and the resident watchdog still does not auto-dispatch or auto-close live pages in this release.
+This runbook describes the CWS 0.9 control plane. Observation and planning remain the default. Recovery mutation is still fenced and exact-window-bound; the resident watchdog may call the same current-worker executor only when explicitly started with `--auto-recover-timeouts` and a recognized delivery error passes every reconciliation gate. Automatic new-chat takeover and live-page auto-close remain disabled.
 
 ## 1. Preflight
 
@@ -176,7 +176,7 @@ Before changing CWS or Local Shell MCP:
 
 The direct LSM file adapter is schema-gated. If LSM changes session/job durable formats, CWS should fail closed until the adapter is explicitly updated and tested.
 
-CWS registry schema v6 is additive over v5. It preserves all v5 task/worker, observation, action, watchdog, capability, worker-window, probe-slot, and probe-mutation rows/indexes, then adds durable worker-protocol task state, per-worker lease metadata, and append-only protocol events keyed to the existing task/worker identities. Protocol writes use a revision compare-and-swap under `BEGIN IMMEDIATE`; ambiguous legacy worker combinations fail closed instead of inventing fresh authority. The v5 global unresolved-probe and per-task unresolved-action uniqueness fences remain unchanged.
+CWS registry schema v6 is additive over v5. It preserves all v5 task/worker, observation, action, watchdog, capability, worker-window, probe-slot, and probe-mutation rows/indexes, then adds durable worker-protocol task state, per-worker lease metadata, and append-only protocol events keyed to the existing task/worker identities. Protocol writes use a revision compare-and-swap under `BEGIN IMMEDIATE`; ambiguous legacy worker combinations fail closed instead of inventing fresh authority. The v5 global unresolved-probe and per-task unresolved-action uniqueness fences remain unchanged. CWS 0.9 does not change the schema; ACK replay-suppression signatures are stored in the existing bounded action metadata.
 
 ## 9. Data handling
 

@@ -1,6 +1,6 @@
 # Action adapter and crash fencing
 
-CWS keeps the exact-window Windows UI Automation transport gated by default. It is wired only to an explicit one-shot `dispatch-execute` command; the resident watchdog still does not auto-dispatch.
+CWS keeps the exact-window Windows UI Automation transport gated by default. It is wired to the explicit one-shot `dispatch-execute` command and, in CWS 0.9, to one separately opted-in resident path for recognized delivery-timeout recovery. The default watchdog remains advisory.
 
 The design goal remains unchanged: a supervisor crash must never turn an uncertain previous send into an automatic duplicate send.
 
@@ -41,7 +41,7 @@ This is a database invariant, not only a Python check.
 
 ## Exact-window UIA transport
 
-`ChromeUiaActionTransport` remains disabled by default. There is still no generic `cws send` or `cws continue` command and no watchdog auto-dispatch. The only operational entry is `dispatch-execute`, which enables the adapter for one invocation after explicit task confirmation and all deterministic recovery fences pass.
+`ChromeUiaActionTransport` remains disabled by default. There is still no generic `cws send` or `cws continue` command. `dispatch-execute` enables the adapter for one explicitly confirmed invocation. CWS 0.9 may also enable the same adapter from `watch --auto-recover-timeouts` / `watchdog-start --auto-recover-timeouts`, but only after a recognized delivery error and the same deterministic recovery fences pass.
 
 The preferred construction path is a fresh `WorkerWindowBinding` recorded by exact-URL UIA observation. Current registry migrations retain the schema-v3 short-lived lease containing:
 
@@ -100,7 +100,7 @@ It does not return conversation text or transport payload content.
 
 Accessibility trees may expose the same visible turn multiple times, so nonce occurrences are a **bounded duplicate fence**, not an exact count of user turns. Stable signatures across independent observations are stronger than one instantaneous sample.
 
-`action-reconcile-uia ATTEMPT` invokes this observer and marks the attempt acknowledged only when the known marker is observed exactly once and generation is complete. There is still no CLI that fabricates `ack=true`.
+`action-reconcile-uia ATTEMPT` invokes this observer and marks the attempt acknowledged only when the known marker is observed exactly once and generation is complete. There is still no CLI that fabricates `ack=true`. In 0.9, after a positive ACK, CWS also records the comparable normal-browser message signature in existing action metadata; an unchanged acknowledged UI state cannot retrigger resident timeout recovery.
 
 ## Planner feedback
 
@@ -127,7 +127,7 @@ python -m cws action-cancel ATTEMPT --reason "human reconciliation completed"
 
 Migrations are additive. Unknown future registry schema versions fail closed.
 
-## Explicit execution, still no unattended dispatch
+## Explicit execution and narrow resident timeout recovery
 
 The policy layer exposes only a one-shot current-worker continuation. `dispatch-execute` requires:
 
@@ -140,4 +140,4 @@ The policy layer exposes only a one-shot current-worker continuation. `dispatch-
 - canonical recovery prompt;
 - the gated transport.
 
-The ARMED row and recovery-budget increment are committed atomically before submission. Positive post-action acknowledgement remains a separate observation step. The resident watchdog does not invoke the executor automatically.
+The ARMED row and recovery-budget increment are committed atomically before submission. Positive post-action acknowledgement remains a separate observation step. The default resident watchdog does not invoke the executor. With explicit `--auto-recover-timeouts`, the watchdog may invoke it only for a recognized delivery error, after two stable reconciliation samples, cooldown, exact-window/LSM/workspace/action gates, and with at most one possible external send per cycle.

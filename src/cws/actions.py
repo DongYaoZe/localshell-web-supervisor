@@ -94,6 +94,7 @@ class ActionAcknowledgement:
     kind: str
     evidence_hash: str
     detail: str = ""
+    text_signature: str | None = None
 
 
 class ActionTransport(Protocol):

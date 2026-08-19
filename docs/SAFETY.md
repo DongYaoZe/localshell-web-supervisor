@@ -98,8 +98,9 @@ matches, changed HWND/PID/executable identity, or incomplete observation stays f
 - Production pool policy still pins live LSM work, active generation, and ambiguous recovery states as `DO_NOT_CLOSE`; capability evidence does not authorize automatic eviction.
 - Page-continuity capabilities are versioned, context-bound, expiring, and only used when explicitly selected.
 - The durable probe model permits at most one reusable slot and at most one unresolved mutation operation; stale or ambiguous ownership blocks replacement rather than opening another window.
-- The 0.8 orchestration layer is advisory: even a selected `recommend-action` decision has `mutation_allowed=false` and cannot bypass the explicit executor.
-- The 0.8 worker-lease protocol persists revision/generation authority with atomic compare-and-swap so a superseded, stale, restarted, or wall-clock-rollback conversation cannot regain authority. Automatic browser conversation creation remains disabled.
+- The pure orchestration layer remains advisory: even a selected `recommend-action` decision has `mutation_allowed=false` and cannot bypass the fenced executor.
+- CWS 0.9 adds only one resident mutation opt-in: recognized delivery-timeout recovery on the already-registered current worker. It still requires the two-sample semantic fence, LSM/workspace reconciliation, fresh exact-window binding, unresolved-action lock, recovery budget, cooldown, and positive nonce/hash ACK; an unchanged positively acknowledged browser signature cannot retrigger a send.
+- The worker-lease protocol persists revision/generation authority with atomic compare-and-swap so a superseded, stale, restarted, or wall-clock-rollback conversation cannot regain authority. Automatic browser conversation creation remains disabled.
 - Anonymous/localhost experiments cannot satisfy the page-close safety gate.
 - Never bulk-close ambiguous unmarked user windows.
 

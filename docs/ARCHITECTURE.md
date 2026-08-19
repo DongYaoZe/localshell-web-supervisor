@@ -282,3 +282,14 @@ probe/action fences into the pure planner. Adversarial closure additionally reje
 task inputs, future exact-window/probe evidence, future probe observations, and wall-clock
 heartbeat rollback. Automatic ChatGPT conversation creation, watchdog auto-dispatch, and
 live-worker auto-close remain disabled in 0.8. See `V6_SPEC.md`.
+
+### 0.9 same-worker timeout-autopilot milestone
+The resident watchdog gains one explicit mutation mode for recognized ChatGPT Web delivery
+errors. It reuses the existing exact current-worker window and the existing fenced executor;
+it does not add a second send path. Before submission it still requires two stable semantic
+reconciliation samples, durable LSM/workspace agreement, a fresh exact-window binding, no
+unresolved action, remaining recovery budget, and a cooldown. A positive nonce/hash ACK keeps
+the duplicate-send lock authoritative, while a stored normal-browser ACK signature prevents
+an unchanged old error banner from retriggering recovery. At most one possible external send
+is attempted per watchdog cycle. Generic retries, new-conversation creation/takeover, and
+live-worker page closing remain disabled. See `AUTOPILOT.md`.

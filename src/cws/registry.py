@@ -592,8 +592,31 @@ class Registry:
         attempt.acknowledged_at = acknowledgement.observed_at
         attempt.acknowledgement_kind = acknowledgement.kind
         attempt.acknowledgement_hash = acknowledgement.evidence_hash
+        if acknowledgement.text_signature:
+            attempt.metadata["ack_uia_text_signature"] = acknowledgement.text_signature
         attempt.last_error = None
         attempt.updated_at = acknowledgement.observed_at
+        return self._replace_action_attempt(attempt)
+
+    def record_action_ack_browser_signature(
+        self,
+        attempt_id: str,
+        *,
+        message_signature: str,
+    ) -> ActionAttempt:
+        """Attach the comparable normal-browser signature after a positive ACK.
+
+        The nonce ACK observer and normal UIA browser observer intentionally hash different
+        bounded surfaces. Replay suppression therefore stores the normal browser signature
+        separately after the action is already ACKNOWLEDGED.
+        """
+        signature = str(message_signature).strip()
+        if not signature:
+            raise ValueError("message_signature must be non-empty")
+        attempt = self.get_action_attempt(attempt_id)
+        if attempt.state != ActionAttemptState.ACKNOWLEDGED:
+            raise RuntimeError("browser acknowledgement signature requires ACKNOWLEDGED action")
+        attempt.metadata["ack_browser_signature"] = signature
         return self._replace_action_attempt(attempt)
 
     def cancel_action_attempt(

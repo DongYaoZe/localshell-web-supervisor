@@ -42,6 +42,11 @@ from .reconcile import build_reconciliation_record
 from .recovery import recommend
 from .registry import Registry
 from .scheduler import attention_queue
+from .timeout_recovery import (
+    TimeoutRecoveryPolicy,
+    gate_timeout_dispatch_plan,
+    is_recoverable_delivery_error,
+)
 from .uia import ChromeUiaProbe, UiaProbeUnavailable
 from .uia_actions import ChromeUiaAckObserver, ChromeUiaActionTransport, UiaActionUnavailable
 from .watchdog_host import (
@@ -62,7 +67,7 @@ def default_db_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.8 control plane)")
+    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.9 control plane)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=None, help="registry sqlite path (default: .cws/registry.sqlite3)")
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
@@ -104,6 +109,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="refresh matching workers from existing Chrome via read-only UI Automation",
     )
+    watch.add_argument(
+        "--auto-recover-timeouts",
+        action="store_true",
+        help=(
+            "opt in to resident recovery only for explicit ChatGPT Web delivery errors; "
+            "all two-sample/LSM/workspace/exact-window/action fences still apply"
+        ),
+    )
 
     watchdog_status = sub.add_parser(
         "watchdog-status",
@@ -117,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     watchdog_start.add_argument("--interval", type=float, default=30.0)
     watchdog_start.add_argument("--uia", action="store_true")
+    watchdog_start.add_argument(
+        "--auto-recover-timeouts",
+        action="store_true",
+        help="explicitly enable fenced resident recovery for delivery-timeout errors",
+    )
     watchdog_start.add_argument("--log")
     watchdog_start.add_argument("--ready-timeout", type=float, default=8.0)
     watchdog_start.add_argument("--json", action="store_true")
@@ -565,6 +583,212 @@ def _emit_attention(queue, *, as_json: bool) -> None:
             )
 
 
+def _auto_recover_timeout_cycle(
+    registry: Registry,
+    adapter,
+    workspace_probe: WorkspaceProbe,
+    queue,
+    *,
+    policy: TimeoutRecoveryPolicy,
+) -> list[dict]:
+    """Run one bounded resident timeout-recovery cycle.
+
+    The mode is intentionally narrow: it only targets explicit ChatGPT Web delivery errors,
+    reuses the exact current worker window, and still requires the ordinary two-sample
+    semantic fence plus durable LSM/workspace/action/recovery-budget checks. At most one
+    external send with a possible side effect is attempted per watchdog cycle.
+    """
+
+    if not policy.enabled:
+        return []
+
+    task_ids = list(dict.fromkeys(item.task_id for item in queue))
+    results: list[dict] = []
+    uia_probe = ChromeUiaProbe()
+
+    # First reconcile any ambiguous/previously-submitted action. This is read-only and can
+    # release the per-task send lock only from positive nonce/hash completion evidence.
+    for task_id in task_ids:
+        attempt = registry.unresolved_action_attempt(task_id)
+        if attempt is None:
+            continue
+        try:
+            _refresh_uia(registry, task_id, uia_probe)
+            reconciled = reconcile_action_with_uia(
+                registry,
+                attempt_id=attempt.attempt_id,
+                observer_factory=lambda chrome: ChromeUiaAckObserver(
+                    chrome_executable=chrome
+                ),
+            )
+            detail = reconciled.detail
+            if reconciled.acknowledged:
+                browser_after_ack = registry.latest_browser_observation(
+                    registry.get_task(task_id).current_worker_id
+                )
+                if browser_after_ack is not None and browser_after_ack.message_signature:
+                    registry.record_action_ack_browser_signature(
+                        attempt.attempt_id,
+                        message_signature=browser_after_ack.message_signature,
+                    )
+            results.append(
+                {
+                    "task_id": task_id,
+                    "kind": "ack",
+                    "attempt_id": attempt.attempt_id,
+                    "state": reconciled.state,
+                    "acknowledged": reconciled.acknowledged,
+                    "detail": detail,
+                }
+            )
+            registry.record_recovery_event(
+                task_id,
+                action=f"watchdog_ack:{reconciled.state}",
+                safe_to_dispatch=False,
+                reason=detail,
+                payload={"attempt_id": attempt.attempt_id},
+            )
+        except (ActionBlocked, UiaActionUnavailable, UiaProbeUnavailable) as exc:
+            results.append(
+                {
+                    "task_id": task_id,
+                    "kind": "ack",
+                    "attempt_id": attempt.attempt_id,
+                    "state": attempt.state.value,
+                    "acknowledged": False,
+                    "detail": f"ack reconciliation blocked: {exc}",
+                }
+            )
+
+    for task_id in task_ids:
+        if registry.unresolved_action_attempt(task_id) is not None:
+            continue
+
+        # Autorecovery requires a fresh positive exact-window observation in this cycle.
+        try:
+            _refresh_uia(registry, task_id, uia_probe)
+        except UiaProbeUnavailable as exc:
+            results.append(
+                {
+                    "task_id": task_id,
+                    "kind": "dispatch",
+                    "submitted": False,
+                    "detail": f"fresh exact-window observation unavailable: {exc}",
+                }
+            )
+            continue
+
+        previous = registry.latest_reconciliation(task_id)
+        task, browser, lsm, workspace, assessment = _assessment(
+            registry,
+            task_id,
+            adapter,
+            workspace_probe,
+            policy=None,
+            reconcile_workspace=True,
+            refresh_uia=False,
+        )
+        if not is_recoverable_delivery_error(browser):
+            continue
+
+        current = _record_current_reconciliation(
+            registry,
+            task,
+            browser,
+            lsm,
+            workspace,
+            assessment,
+        )
+        recommendation = recommend(task, assessment, lsm, workspace)
+        plan = build_dispatch_plan(
+            task,
+            recommendation,
+            previous=previous,
+            current=current,
+            policy=DispatchPolicy(transport_enabled=True),
+        )
+        plan = apply_unresolved_action_gate(
+            plan,
+            registry.unresolved_action_attempt(task.task_id),
+        )
+        plan = gate_timeout_dispatch_plan(
+            registry,
+            plan,
+            browser=browser,
+            policy=policy,
+        )
+        if not plan.would_dispatch:
+            results.append(
+                {
+                    "task_id": task_id,
+                    "kind": "dispatch",
+                    "submitted": False,
+                    "detail": plan.reason,
+                    "blockers": list(plan.blockers),
+                }
+            )
+            continue
+
+        try:
+            execution = execute_current_worker_recovery(
+                registry,
+                plan=plan,
+                recommendation=recommendation,
+                policy=DispatchExecutionPolicy(
+                    enabled=True,
+                    confirmed_task_id=task.task_id,
+                ),
+                transport_factory=lambda binding: ChromeUiaActionTransport.from_binding(
+                    binding,
+                    enabled=True,
+                ),
+            )
+        except (ActionBlocked, DispatchDisabled, UiaActionUnavailable) as exc:
+            registry.record_recovery_event(
+                task.task_id,
+                action="watchdog_timeout_blocked",
+                safe_to_dispatch=False,
+                reason=str(exc),
+                payload={"dispatch_plan": asdict(plan)},
+            )
+            results.append(
+                {
+                    "task_id": task_id,
+                    "kind": "dispatch",
+                    "submitted": False,
+                    "detail": str(exc),
+                }
+            )
+            continue
+
+        registry.record_recovery_event(
+            task.task_id,
+            action=f"watchdog_timeout:{execution.state}",
+            safe_to_dispatch=execution.submitted,
+            reason=execution.detail,
+            payload={
+                "attempt_id": execution.attempt_id,
+                "side_effect_possible": execution.side_effect_possible,
+                "dispatch_plan": asdict(plan),
+            },
+        )
+        results.append(
+            {
+                "task_id": task_id,
+                "kind": "dispatch",
+                "attempt_id": execution.attempt_id,
+                "state": execution.state,
+                "submitted": execution.submitted,
+                "side_effect_possible": execution.side_effect_possible,
+                "detail": execution.detail,
+            }
+        )
+        if execution.submitted or execution.side_effect_possible:
+            break
+
+    return results
+
+
 def _print_json(data) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
 
@@ -774,6 +998,7 @@ def main(argv: list[str] | None = None) -> int:
                 db_path=registry.db_path,
                 interval_s=max(1.0, float(args.interval)),
                 use_uia=args.uia,
+                auto_recover_timeouts=args.auto_recover_timeouts,
                 lsm_state_dir=args.lsm_state_dir,
                 git_bin=args.git_bin,
                 log_path=args.log,
@@ -1363,6 +1588,13 @@ def main(argv: list[str] | None = None) -> int:
                     chrome_executable=chrome
                 ),
             )
+            if reconciled.acknowledged:
+                browser_after_ack = registry.latest_browser_observation(task.current_worker_id)
+                if browser_after_ack is not None and browser_after_ack.message_signature:
+                    registry.record_action_ack_browser_signature(
+                        attempt.attempt_id,
+                        message_signature=browser_after_ack.message_signature,
+                    )
             if args.json:
                 _print_json(asdict(reconciled))
             else:
@@ -1415,6 +1647,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "watch":
+            if args.auto_recover_timeouts and not args.uia:
+                raise DispatchDisabled(
+                    "--auto-recover-timeouts requires --uia exact-window observation"
+                )
             policy = WatchPolicy(
                 browser_suspect_after_s=args.browser_suspect_after,
                 network_suspect_after_s=args.network_suspect_after,
@@ -1465,6 +1701,14 @@ def main(argv: list[str] | None = None) -> int:
                     if args.once or signature != last_signature:
                         _emit_attention(queue, as_json=args.json)
                         last_signature = signature
+                    if args.auto_recover_timeouts:
+                        _auto_recover_timeout_cycle(
+                            registry,
+                            adapter,
+                            workspace_probe,
+                            queue,
+                            policy=TimeoutRecoveryPolicy(enabled=True),
+                        )
                     if args.once:
                         return 0
                     time.sleep(interval)

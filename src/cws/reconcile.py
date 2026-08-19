@@ -76,6 +76,11 @@ def build_reconciliation_record(
                 "url": browser.url,
                 "generating": browser.generating,
                 "send_button_ready": browser.send_button_ready,
+                "composer_present": (
+                    bool(browser.raw.get("composer_present"))
+                    if "composer_present" in browser.raw
+                    else None
+                ),
                 "pending_tool_calls": browser.pending_tool_calls,
                 "visible_error": browser.visible_error,
                 "last_dom_change_at": browser.last_dom_change_at,

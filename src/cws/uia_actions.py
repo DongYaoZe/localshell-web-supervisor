@@ -636,4 +636,5 @@ def acknowledgement_from_uia_observation(
         kind="uia_nonce_hash",
         evidence_hash=evidence_digest(evidence),
         detail="positive exact-window nonce/hash UIA evidence",
+        text_signature=observation.text_signature,
     )

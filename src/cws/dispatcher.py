@@ -210,9 +210,12 @@ def build_dispatch_plan(
         checks["browser_not_generating"] = browser.get("generating") is not True
         if not checks["browser_not_generating"]:
             blockers.append("browser still reports active generation")
-        checks["composer_ready"] = browser.get("send_button_ready") is True
-        if not checks["composer_ready"]:
-            blockers.append("no positive ready-Send/composer evidence")
+        checks["composer_available"] = bool(
+            browser.get("composer_present") is True
+            or browser.get("send_button_ready") is True
+        )
+        if not checks["composer_available"]:
+            blockers.append("no positive composer-presence evidence")
         last_dom_change_at = browser.get("last_dom_change_at")
         checks["dom_quiet_enough"] = bool(
             last_dom_change_at is not None

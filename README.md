@@ -6,7 +6,7 @@ The central rule is:
 
 > **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.8 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, short-lived exact-window leases, a single reusable probe-slot abstraction with write-ahead OPEN/ROTATE/CLOSE operations, versioned page-continuity capabilities, deterministic advisory orchestration, a schema-v6 persisted generation-fenced replaceable-worker protocol, and an independent resident-watchdog host. Recovery execution exists only as an explicit one-shot gated command in 0.8; unattended dispatch and automatic live-page closing remain disabled.
+CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.9 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, short-lived exact-window leases, a single reusable probe-slot abstraction with write-ahead OPEN/ROTATE/CLOSE operations, versioned page-continuity capabilities, deterministic advisory orchestration, a schema-v6 persisted generation-fenced replaceable-worker protocol, and an independent resident-watchdog host. In addition to the explicit one-shot executor, 0.9 can explicitly opt the resident watchdog into same-worker recovery for recognized ChatGPT Web delivery errors. General unattended dispatch, automatic new-chat takeover, and automatic live-page closing remain disabled.
 
 ## Why
 
@@ -20,9 +20,9 @@ CWS separates three truth domains:
 
 Completion and recovery decisions are never based on the Send/Stop button alone.
 
-## Current 0.8 control plane
+## Current 0.9 control plane
 
-The 0.8 control plane remains fail-closed and conservative:
+The 0.9 control plane remains fail-closed and conservative:
 
 - SQLite task/worker registry;
 - durable task identity independent of conversation URL;
@@ -47,11 +47,12 @@ The 0.8 control plane remains fail-closed and conservative:
 - a revision/generation-fenced worker-lease protocol for registration, heartbeat, handoff, takeover, supersession, abandonment, completion, and parent/child task lineage, persisted atomically with revision compare-and-swap; automatic browser conversation creation remains disabled;
 - deterministic health classifier;
 - low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
+- opt-in `--auto-recover-timeouts` mode for recognized delivery errors only: it refreshes the exact current window, reconciles LSM/Git, requires two stable semantic samples, honors the action lock/recovery budget/cooldown, sends at most one fenced current-worker continuation per cycle, and waits for positive nonce/hash ACK before another send;
 - independent detached watchdog start/status plus cooperative lease-based stop, without relying on LSM process-tree kill semantics;
 - strict, separate evidence gates for generation/page continuity and live-LSM-tool continuity across close/reopen; both passed isolated authenticated experiments, including one tracked LSM job that was `running` at close and later `succeeded`;
 - a gated exact-window UIA sender plus hash/nonce-only acknowledgement observer with real isolated `ARMED → SUBMITTED → ACKNOWLEDGED` acceptance evidence;
 - conservative recovery recommendation and idempotent recovery prompt;
-- **no unattended ChatGPT send/retry/takeover loop and no automatic live-worker page close yet**.
+- **no general unattended ChatGPT retry/takeover loop, no automatic new-conversation creation, and no automatic live-worker page close yet**.
 
 ### Quick start
 
@@ -83,6 +84,8 @@ python -m cws dispatch-plan example --uia
 # Explicit one-shot recovery only after a candidate-ready dry run:
 python -m cws dispatch-execute example --confirm-task example --enable-experimental-uia
 python -m cws watchdog-status
+# Optional resident recovery for recognized delivery-timeout errors on registered tasks:
+python -m cws watchdog-start --auto-recover-timeouts
 ```
 
 For browser telemetry, `cws observe-dom` ingests the transport-neutral V0 probe shape and
@@ -98,7 +101,7 @@ UTF-8 output.
 The registry defaults to `.cws/registry.sqlite3`. Override with `--db` or `CWS_DB`.
 Local Shell state is detected from `CWS_LSM_STATE_DIR`, `LOCAL_SHELL_MCP_STATE_DIR`, or the hardened Windows deployment path when present. `--lsm-state-dir` always wins.
 
-`cws watch` is the foreground resident loop. For independent hosting, use `cws watchdog-start`, `cws watchdog-status`, and `cws watchdog-stop`. The detached host still runs the same watcher and SQLite singleton lease. Stop is cooperative: it steals the lease into a short-lived `stop:` fence so the old watcher exits on its next failed heartbeat while a replacement remains blocked. No process-tree kill is required.
+`cws watch` is the foreground resident loop. For independent hosting, use `cws watchdog-start`, `cws watchdog-status`, and `cws watchdog-stop`. The detached host still runs the same watcher and SQLite singleton lease. `watchdog-start --auto-recover-timeouts` is an explicit opt-in that also enables exact-window UIA and only handles recognized delivery errors for already registered tasks; it does not create replacement conversations or close live pages. Stop is cooperative: it steals the lease into a short-lived `stop:` fence so the old watcher exits on its next failed heartbeat while a replacement remains blocked. No process-tree kill is required.
 
 The V0 file adapter is deliberately **schema-version gated**. It currently understands
 the inspected v4.0.1 file backend (`session version=1`, `jobs version=2`). If LSM changes
@@ -141,14 +144,15 @@ The 0.6 reusable probe-slot, durable capability, and explicit recovery-execution
 are documented in [`docs/V4_SPEC.md`](docs/V4_SPEC.md). The 0.7 crash-fenced probe mutation
 and advisory worker-protocol boundary is documented in [`docs/V5_SPEC.md`](docs/V5_SPEC.md).
 The 0.8 schema-v6 durable worker protocol and adversarial orchestration closure are documented
-in [`docs/V6_SPEC.md`](docs/V6_SPEC.md).
+in [`docs/V6_SPEC.md`](docs/V6_SPEC.md). The 0.9 same-worker timeout recovery loop is documented
+in [`docs/AUTOPILOT.md`](docs/AUTOPILOT.md).
 
 For day-to-day use, see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). `cws doctor` is a
 read-only preflight for registry/LSM schema, RAM, watchdog lease/PID state, unresolved action fences, workspace/task state, and optional exact-URL UIA. It never repairs or changes browser/task state. The write-ahead action protocol is documented in [`docs/ACTIONS.md`](docs/ACTIONS.md), and isolated browser experiments in [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 
 ## Safety boundary
 
-CWS never treats `continue` as idempotent. Before recovery execution, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. CWS does not migrate browser sign-in state, bypass access controls, or reconstruct private ChatGPT endpoints. The executor is deliberately one-shot and explicitly enabled; the resident watchdog still does not auto-send. Page eviction is likewise advisory only for live work.
+CWS never treats `continue` as idempotent. Before recovery execution, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. CWS does not migrate browser sign-in state, bypass access controls, or reconstruct private ChatGPT endpoints. The default watchdog remains advisory; only the explicit `--auto-recover-timeouts` mode may call the same fenced current-worker executor, and only for recognized delivery errors. Page eviction is likewise advisory only for live work.
 
 Browser telemetry is also data-minimized: UIA does not read the unsent prompt draft;
 `probe-uia` returns state/signature diagnostics rather than conversation text; persisted
@@ -165,3 +169,4 @@ UIA/LSM snapshot raw metadata is reduced to the numeric/state fields needed by t
 - **0.6:** schema-v4 durable capability provenance, at-most-one reusable probe-slot state, nonce-bound recovery prompts, atomic recovery-budget arming, explicit fenced `dispatch-execute`, and positive `action-reconcile-uia` acknowledgement. Default `dispatch-plan` stays dry-run; watchdog auto-dispatch and live-worker auto-close remain disabled.
 - **0.7:** schema-v5 write-ahead probe `OPEN`/`ROTATE`/`CLOSE` operations and deterministic crash reconciliation, advisory fair recovery orchestration, a pure generation-fenced replaceable-worker protocol, transactional page-pool updates, and duplicate-free attention scheduling. Browser mutation remains explicit; watchdog auto-dispatch and live-worker auto-close remain disabled.
 - **0.8:** schema-v6 durable worker protocol persistence with revision-CAS writes and append-only events, restart-safe generation authority, an advisory runtime evidence adapter, operational probe reconciliation, and adversarial closure for duplicate scheduling, global probe fencing, future timestamps, and wall-clock rollback. Same-worker recovery remains explicit in this release; automatic new-chat takeover and live-page auto-close remain disabled.
+- **0.9:** opt-in resident same-worker timeout autopilot for recognized ChatGPT Web delivery errors. It keeps the existing two-sample LSM/workspace/exact-window/action fences, adds ACK-state replay suppression and a recovery cooldown, and performs at most one possible external send per watchdog cycle. Automatic new-chat takeover and live-page auto-close remain disabled.

@@ -113,6 +113,7 @@ def build_watchdog_command(
     db_path: str | Path,
     interval_s: float,
     use_uia: bool,
+    auto_recover_timeouts: bool = False,
     lsm_state_dir: str | None = None,
     git_bin: str | None = None,
     lease_owner: str | None = None,
@@ -125,8 +126,10 @@ def build_watchdog_command(
     command += ["watch", "--interval", str(max(1.0, float(interval_s)))]
     if lease_owner:
         command += ["--lease-owner", lease_owner]
-    if use_uia:
+    if use_uia or auto_recover_timeouts:
         command.append("--uia")
+    if auto_recover_timeouts:
+        command.append("--auto-recover-timeouts")
     return command
 
 
@@ -137,6 +140,7 @@ def launch_detached_watchdog(
     db_path: str | Path,
     interval_s: float = 30.0,
     use_uia: bool = False,
+    auto_recover_timeouts: bool = False,
     lsm_state_dir: str | None = None,
     git_bin: str | None = None,
     log_path: str | Path | None = None,
@@ -156,6 +160,7 @@ def launch_detached_watchdog(
         db_path=db_path,
         interval_s=interval_s,
         use_uia=use_uia,
+        auto_recover_timeouts=auto_recover_timeouts,
         lsm_state_dir=lsm_state_dir,
         git_bin=git_bin,
         lease_owner=lease_owner,
