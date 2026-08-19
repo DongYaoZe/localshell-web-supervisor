@@ -44,11 +44,11 @@ class OrchestrationPolicy:
 
 @dataclass(slots=True)
 class TaskOrchestrationInput:
-    """Pure policy input assembled by an eventual durable-storage adapter.
+    """Pure policy input assembled by a read-only durable-evidence adapter.
 
     `worker_lease_expires_at`, `last_recovery_at`, `last_scheduled_at`, and
-    `consecutive_waits` intentionally remain adapter inputs in 0.7. The v4 registry has no
-    dedicated durable columns for them and this task does not own a schema migration.
+    `consecutive_waits` intentionally remain adapter inputs until durable persistence owns
+    those fields. Callers must not invent missing lease or scheduler history.
     """
 
     task: TaskRecord
@@ -69,6 +69,9 @@ class TaskOrchestrationInput:
     page_capability: PageCapabilityRecord | None = None
     capability_context: CapabilityContext | None = None
     page_capability_kind: PageCapabilityKind = PageCapabilityKind.GENERATION
+    reconcile_blockers: tuple[str, ...] = ()
+    human_blockers: tuple[str, ...] = ()
+    scheduling_history_known: bool = True
 
 
 @dataclass(slots=True)
@@ -211,6 +214,27 @@ def evaluate_task(
             "recovery budget is exhausted",
             checks=checks,
             blockers=["recovery-attempt budget exhausted"],
+        )
+
+    checks["no_external_human_blockers"] = not item.human_blockers
+    if item.human_blockers:
+        return _decision(
+            item,
+            OrchestrationDecisionKind.BLOCKED_HUMAN,
+            "external durable evidence requires explicit human resolution",
+            checks=checks,
+            blockers=list(item.human_blockers),
+        )
+
+    checks["no_external_reconcile_blockers"] = not item.reconcile_blockers
+    if item.reconcile_blockers:
+        return _decision(
+            item,
+            OrchestrationDecisionKind.RECONCILE,
+            "external durable evidence must be reconciled before recovery",
+            checks=checks,
+            blockers=list(item.reconcile_blockers),
+            retry_after_s=backoff,
         )
 
     lsm = item.lsm
@@ -543,11 +567,20 @@ def plan_orchestration(
     policy = policy or OrchestrationPolicy()
     decisions = [evaluate_task(item, now=now, policy=policy) for item in items]
     by_task = {item.task.task_id: item for item in items}
+    actionable_kinds = {
+        OrchestrationDecisionKind.RECONCILE,
+        OrchestrationDecisionKind.RECOMMEND_ACTION,
+    }
+    unknown_schedule_ids = {
+        decision.task_id
+        for decision in decisions
+        if decision.kind in actionable_kinds
+        and not by_task[decision.task_id].scheduling_history_known
+    }
     actionable = [
         decision
         for decision in decisions
-        if decision.kind
-        in {OrchestrationDecisionKind.RECONCILE, OrchestrationDecisionKind.RECOMMEND_ACTION}
+        if decision.kind in actionable_kinds and decision.task_id not in unknown_schedule_ids
     ]
     actionable.sort(key=lambda decision: _fairness_key(by_task[decision.task_id]))
     selected_ids = {
@@ -556,6 +589,22 @@ def plan_orchestration(
 
     result: list[OrchestrationDecision] = []
     for decision in decisions:
+        if decision.task_id in unknown_schedule_ids:
+            result.append(
+                replace(
+                    decision,
+                    kind=OrchestrationDecisionKind.WAIT_COOLDOWN,
+                    reason=(
+                        "scheduler selection withheld because durable scheduling history is "
+                        "unavailable; supply it explicitly to the adapter"
+                    ),
+                    selected=False,
+                    retry_after_s=max(0.1, float(policy.max_backoff_s)),
+                    deferred_kind=decision.kind,
+                    blockers=[*decision.blockers, "durable scheduling history unavailable"],
+                )
+            )
+            continue
         if decision.task_id in selected_ids:
             result.append(replace(decision, selected=True))
             continue
