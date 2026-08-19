@@ -6,7 +6,7 @@ The central rule is:
 
 > **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.9 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, short-lived exact-window leases, a single reusable probe-slot abstraction with write-ahead OPEN/ROTATE/CLOSE operations, versioned page-continuity capabilities, deterministic advisory orchestration, a schema-v6 persisted generation-fenced replaceable-worker protocol, and an independent resident-watchdog host. In addition to the explicit one-shot executor, 0.9 can explicitly opt the resident watchdog into same-worker recovery for recognized ChatGPT Web delivery errors. General unattended dispatch, automatic new-chat takeover, and automatic live-page closing remain disabled.
+CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.10 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, crash-fenced browser/action intents, exact-window leases, versioned page-continuity capabilities, deterministic orchestration, a persisted generation-fenced replaceable-worker protocol, and a schema-v8 parent/child scheduler. In addition to 0.9's opt-in same-worker timeout recovery, 0.10 can persist child assignments, explicitly create one initial CWS-owned child conversation inside a confirmed ChatGPT Project, bind the child's Local Shell logical session, track durable completion, and perform guarded replacement-worker takeover using supported Local Shell MCP semantics. General unattended dispatch, automatic replacement-chat creation, and automatic live-page closing remain disabled.
 
 ## Why
 
@@ -20,9 +20,9 @@ CWS separates three truth domains:
 
 Completion and recovery decisions are never based on the Send/Stop button alone.
 
-## Current 0.9 control plane
+## Current 0.10 control plane
 
-The 0.9 control plane remains fail-closed and conservative:
+The 0.10 control plane remains fail-closed and conservative:
 
 - SQLite task/worker registry;
 - durable task identity independent of conversation URL;
@@ -36,7 +36,7 @@ The 0.9 control plane remains fail-closed and conservative:
 - system/aggregate Chrome RAM telemetry and conservative active/park/probe planning;
 - mandatory two-sample semantic-fence dispatch planning;
 - durable write-ahead action attempts (`ARMED`, `SUBMITTED`, `RECONCILE_REQUIRED`, `ACKNOWLEDGED`, `FAILED`, `CANCELLED`);
-- SQLite schema v6: all schema-v5 action/window/capability/probe invariants plus durable worker-protocol task state, per-worker generation/lease state, and append-only protocol events;
+- SQLite schema v8: schema-v6 durable worker-protocol state plus child dispatch contracts, write-ahead replacement attempts, explicit ChatGPT Project binding, and write-ahead child-spawn attempts;
 - an audited `dispatch-plan` command that remains dry-run by default;
 - an explicit one-shot `dispatch-execute` path that requires a candidate-ready two-sample fence, exact task confirmation, a fresh exact-window lease, no unresolved action, available recovery budget, and per-invocation UIA opt-in;
 - `action-reconcile-uia` can release the action lock only from a completed exact single-turn nonce/hash acknowledgement;
@@ -44,7 +44,10 @@ The 0.9 control plane remains fail-closed and conservative:
 - crash-fenced probe mutation reconciliation that persists authority before close/open, adopts only one exact proven CWS-owned replacement after a crash, and blocks on multiple/changed/unknown window evidence;
 - durable page-continuity capabilities bound to evaluator version, site, browser family/major, platform, observation surface, experiment time, and expiry; capability use remains explicit;
 - deterministic multi-task orchestration policy for observe/reconcile/recommend/wait/human decisions with fairness, cooldown, recovery-budget, LSM/workspace, exact-window, and capability gates; it never grants mutation authority;
-- a revision/generation-fenced worker-lease protocol for registration, heartbeat, handoff, takeover, supersession, abandonment, completion, and parent/child task lineage, persisted atomically with revision compare-and-swap; automatic browser conversation creation remains disabled;
+- a revision/generation-fenced worker-lease protocol for registration, heartbeat, handoff, takeover, supersession, abandonment, completion, and parent/child task lineage, persisted atomically with revision compare-and-swap;
+- durable `child-create` / `child-status` / `child-bind-session` / `child-complete` scheduling primitives, with prompts and expected worktree/branch metadata persisted before a child conversation exists;
+- an explicitly gated **initial** `child-spawn` path that opens one CWS-tagged normal-Chrome project window, binds exact HWND/PID/executable ownership, write-ahead fences the prompt send, and accepts only a resulting conversation in the same stable ChatGPT Project id;
+- guarded replacement attempts that write-ahead the Local Shell MCP takeover boundary before the parent AI makes exactly one supported `session_manage(..., takeover=true)` call, then publish a new CWS generation only after fresh LSM/workspace reconciliation;
 - deterministic health classifier;
 - low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
 - opt-in `--auto-recover-timeouts` mode for recognized delivery errors only: it refreshes the exact current window, reconciles LSM/Git, requires two stable semantic samples, honors the action lock/recovery budget/cooldown, sends at most one fenced current-worker continuation per cycle, and waits for positive nonce/hash ACK before another send;
@@ -52,7 +55,7 @@ The 0.9 control plane remains fail-closed and conservative:
 - strict, separate evidence gates for generation/page continuity and live-LSM-tool continuity across close/reopen; both passed isolated authenticated experiments, including one tracked LSM job that was `running` at close and later `succeeded`;
 - a gated exact-window UIA sender plus hash/nonce-only acknowledgement observer with real isolated `ARMED → SUBMITTED → ACKNOWLEDGED` acceptance evidence;
 - conservative recovery recommendation and idempotent recovery prompt;
-- **no general unattended ChatGPT retry/takeover loop, no automatic new-conversation creation, and no automatic live-worker page close yet**.
+- **no general unattended child dispatcher, no automatic replacement-conversation creation, and no automatic live-worker page close yet**.
 
 ### Quick start
 
@@ -87,6 +90,12 @@ python -m cws watchdog-status
 # Optional resident recovery for recognized delivery-timeout errors on registered tasks:
 python -m cws watchdog-start --auto-recover-timeouts
 ```
+
+For parent-AI child scheduling, including manual adoption, explicit initial child-spawn,
+durable Local Shell session binding, completion references, and replacement takeover, see
+[`docs/CHILD_SCHEDULER.md`](docs/CHILD_SCHEDULER.md). Browser mutation remains split into
+separate write-ahead `arm` / explicit `open` / explicit `send` phases; an ambiguous result is
+reconciled rather than replayed.
 
 For browser telemetry, `cws observe-dom` ingests the transport-neutral V0 probe shape and
 `cws observe-snapshot` can consume an LSM high-level browser snapshot. CWS does not trust
@@ -145,14 +154,16 @@ are documented in [`docs/V4_SPEC.md`](docs/V4_SPEC.md). The 0.7 crash-fenced pro
 and advisory worker-protocol boundary is documented in [`docs/V5_SPEC.md`](docs/V5_SPEC.md).
 The 0.8 schema-v6 durable worker protocol and adversarial orchestration closure are documented
 in [`docs/V6_SPEC.md`](docs/V6_SPEC.md). The 0.9 same-worker timeout recovery loop is documented
-in [`docs/AUTOPILOT.md`](docs/AUTOPILOT.md).
+in [`docs/AUTOPILOT.md`](docs/AUTOPILOT.md). The 0.10 schema-v7/v8 AI child scheduler,
+replacement boundary, and live acceptance are documented in [`docs/V8_SPEC.md`](docs/V8_SPEC.md)
+and [`docs/CHILD_SCHEDULER.md`](docs/CHILD_SCHEDULER.md).
 
 For day-to-day use, see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). `cws doctor` is a
 read-only preflight for registry/LSM schema, RAM, watchdog lease/PID state, unresolved action fences, workspace/task state, and optional exact-URL UIA. It never repairs or changes browser/task state. The write-ahead action protocol is documented in [`docs/ACTIONS.md`](docs/ACTIONS.md), and isolated browser experiments in [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 
 ## Safety boundary
 
-CWS never treats `continue` as idempotent. Before recovery execution, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. CWS does not migrate browser sign-in state, bypass access controls, or reconstruct private ChatGPT endpoints. The default watchdog remains advisory; only the explicit `--auto-recover-timeouts` mode may call the same fenced current-worker executor, and only for recognized delivery errors. Page eviction is likewise advisory only for live work.
+CWS never treats `continue` as idempotent. Before recovery execution, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. CWS does not migrate browser sign-in state, bypass access controls, or reconstruct private ChatGPT endpoints. The default watchdog remains advisory; only the explicit `--auto-recover-timeouts` mode may call the fenced current-worker executor, and only for recognized delivery errors. The 0.10 initial child-spawn path is also explicit per operation and requires exact child confirmation plus normal-browser mutation opt-in. Page eviction remains advisory only for live work.
 
 Browser telemetry is also data-minimized: UIA does not read the unsent prompt draft;
 `probe-uia` returns state/signature diagnostics rather than conversation text; persisted
@@ -170,3 +181,4 @@ UIA/LSM snapshot raw metadata is reduced to the numeric/state fields needed by t
 - **0.7:** schema-v5 write-ahead probe `OPEN`/`ROTATE`/`CLOSE` operations and deterministic crash reconciliation, advisory fair recovery orchestration, a pure generation-fenced replaceable-worker protocol, transactional page-pool updates, and duplicate-free attention scheduling. Browser mutation remains explicit; watchdog auto-dispatch and live-worker auto-close remain disabled.
 - **0.8:** schema-v6 durable worker protocol persistence with revision-CAS writes and append-only events, restart-safe generation authority, an advisory runtime evidence adapter, operational probe reconciliation, and adversarial closure for duplicate scheduling, global probe fencing, future timestamps, and wall-clock rollback. Same-worker recovery remains explicit in this release; automatic new-chat takeover and live-page auto-close remain disabled.
 - **0.9:** opt-in resident same-worker timeout autopilot for recognized ChatGPT Web delivery errors. It keeps the existing two-sample LSM/workspace/exact-window/action fences, adds ACK-state replay suppression and a recovery cooldown, and performs at most one possible external send per watchdog cycle. Automatic new-chat takeover and live-page auto-close remain disabled.
+- **0.10:** schema-v7/v8 parent/child scheduling with durable prompt/worktree metadata, stable child LSM-session binding, crash-safe child completion, write-ahead replacement attempts, and an explicit initial-child normal-Chrome spawn path with project-id/owner-token/HWND/PID fencing. Live acceptance proved parent Chat -> child Chat -> child Local Shell Goal/session -> durable completion. Automatic replacement-chat creation and live-page auto-close remain disabled.

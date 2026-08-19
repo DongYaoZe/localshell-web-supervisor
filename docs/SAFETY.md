@@ -76,10 +76,11 @@ A transport exception is treated as an ambiguous side-effect window and becomes
 effect occurred may produce terminal `FAILED`. A positive acknowledgement must be tied to
 the same attempt and worker before the duplicate-send lock is released as `ACKNOWLEDGED`.
 
-CWS exposes only an explicit one-shot current-worker executor. It requires exact task
-confirmation plus all semantic/LSM/workspace/window/action fences. The resident watchdog
-does not call it automatically. `action-reconcile-uia` can acknowledge only from positive
-single-turn completion evidence; no CLI fabricates acknowledgement.
+CWS exposes an explicit one-shot current-worker executor. It requires exact task
+confirmation plus all semantic/LSM/workspace/window/action fences. The default resident
+watchdog does not call it; only the explicit `--auto-recover-timeouts` mode may use the same
+executor for recognized delivery-timeout errors. `action-reconcile-uia` can acknowledge only
+from positive single-turn completion evidence; no CLI fabricates acknowledgement.
 
 Probe-window mutation has the same write-ahead principle but a separate state machine. A
 durable operation must authorize the exact close/open phase before the transport is called.
@@ -100,7 +101,8 @@ matches, changed HWND/PID/executable identity, or incomplete observation stays f
 - The durable probe model permits at most one reusable slot and at most one unresolved mutation operation; stale or ambiguous ownership blocks replacement rather than opening another window.
 - The pure orchestration layer remains advisory: even a selected `recommend-action` decision has `mutation_allowed=false` and cannot bypass the fenced executor.
 - CWS 0.9 adds only one resident mutation opt-in: recognized delivery-timeout recovery on the already-registered current worker. It still requires the two-sample semantic fence, LSM/workspace reconciliation, fresh exact-window binding, unresolved-action lock, recovery budget, cooldown, and positive nonce/hash ACK; an unchanged positively acknowledged browser signature cannot retrigger a send.
-- The worker-lease protocol persists revision/generation authority with atomic compare-and-swap so a superseded, stale, restarted, or wall-clock-rollback conversation cannot regain authority. Automatic browser conversation creation remains disabled.
+- The worker-lease protocol persists revision/generation authority with atomic compare-and-swap so a superseded, stale, restarted, or wall-clock-rollback conversation cannot regain authority. CWS 0.10 permits only an explicitly armed and confirmed **initial** child-spawn in the declared ChatGPT Project: one CWS-tagged normal-Chrome window, exact HWND/PID/executable binding, write-ahead prompt submission, and same-project conversation proof. Automatic replacement-chat creation remains disabled.
+- Child-spawn, replacement, and ordinary recovery use separate write-ahead records. An ambiguous page open/send or Local Shell takeover cannot be replayed merely because the caller did not receive a clean result.
 - Anonymous/localhost experiments cannot satisfy the page-close safety gate.
 - Never bulk-close ambiguous unmarked user windows.
 

@@ -109,6 +109,11 @@ class WorkspaceProbe:
         except (OSError, subprocess.TimeoutExpired):
             git_head = None
         try:
+            branch = self._run_git(root, "branch", "--show-current")
+            git_branch = branch.stdout.strip() if branch.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            git_branch = None
+        try:
             status = self._run_git(root, "status", "--porcelain=v1", "--untracked-files=normal")
         except (OSError, subprocess.TimeoutExpired) as exc:
             return WorkspaceObservation(
@@ -142,6 +147,7 @@ class WorkspaceProbe:
             is_git_repo=True,
             git_root=git_root,
             git_head=git_head,
+            git_branch=git_branch,
             git_dirty=bool(entries),
             git_status_hash=hashlib.sha256(raw_status.encode("utf-8")).hexdigest(),
             git_status_entries=entries[: self.max_status_entries],

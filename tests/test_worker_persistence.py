@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.db import SCHEMA_V5, SCHEMA_VERSION
+from cws.db import SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION
 from cws.models import SupervisorState, WorkerStatus
 from cws.registry import Registry
 from cws.worker_persistence import WorkerProtocolPersistenceError
@@ -115,9 +115,9 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(SCHEMA_VERSION, 6)
+                self.assertEqual(SCHEMA_VERSION, 8)
                 self.assertEqual(
-                    registry._conn.execute("PRAGMA user_version").fetchone()[0], 6
+                    registry._conn.execute("PRAGMA user_version").fetchone()[0], 8
                 )
                 for table in (
                     "worker_protocol_tasks",
@@ -177,11 +177,47 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
             finally:
                 registry.close()
 
+    def test_schema_v6_migrates_additively_to_child_dispatch_table(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "legacy-v6.sqlite3"
+            raw = sqlite3.connect(db)
+            raw.execute("PRAGMA foreign_keys = ON")
+            raw.executescript(SCHEMA_V5 + SCHEMA_V6)
+            raw.execute("PRAGMA user_version = 6")
+            raw.execute(
+                """INSERT INTO tasks
+                   (task_id, project, objective, cwd, state, checkpoint_json,
+                    created_at, updated_at)
+                   VALUES ('root', 'cws', 'keep v6', '.', 'QUEUED', '{}', 1, 2)"""
+            )
+            raw.execute(
+                """INSERT INTO worker_protocol_tasks
+                   (task_id, revision, generation, task_status, root_task_id)
+                   VALUES ('root', 0, 0, 'open', 'root')"""
+            )
+            raw.commit()
+            raw.close()
+
+            registry = Registry(db)
+            try:
+                self.assertEqual(registry._conn.execute("PRAGMA user_version").fetchone()[0], 8)
+                self.assertEqual(registry.get_task("root").objective, "keep v6")
+                self.assertEqual(
+                    registry.load_worker_protocol("root").lineage.root_task_id, "root"
+                )
+                self.assertIsNotNone(
+                    registry._conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='child_dispatches'"
+                    ).fetchone()
+                )
+            finally:
+                registry.close()
+
     def test_unknown_future_schema_still_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "future.sqlite3"
             raw = sqlite3.connect(db)
-            raw.execute("PRAGMA user_version = 7")
+            raw.execute("PRAGMA user_version = 9")
             raw.commit()
             raw.close()
             with self.assertRaisesRegex(RuntimeError, "unsupported CWS registry schema"):

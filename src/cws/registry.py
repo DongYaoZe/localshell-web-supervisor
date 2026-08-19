@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 import uuid
 from dataclasses import asdict
@@ -11,6 +12,9 @@ from . import worker_persistence, worker_protocol as worker_protocol_model
 from .db import connect
 from .models import (
     BrowserObservation,
+    ChildDispatchRecord,
+    ChildSpawnAttempt,
+    ChildSpawnAttemptState,
     LsmObservation,
     NetworkObservation,
     PageCapabilityKind,
@@ -20,6 +24,8 @@ from .models import (
     ProbeMutationState,
     ProbeWindowSlotBinding,
     ReconciliationRecord,
+    ReplacementAttempt,
+    ReplacementAttemptState,
     SupervisorState,
     TaskRecord,
     WorkspaceObservation,
@@ -44,6 +50,606 @@ class Registry:
 
     def close(self) -> None:
         self._conn.close()
+
+    def create_child_dispatch(
+        self,
+        parent_task_id: str,
+        *,
+        child_key: str,
+        project: str,
+        objective: str,
+        cwd: str,
+        prompt_text: str,
+        child_task_id: str | None = None,
+        expected_branch: str | None = None,
+        base_ref: str | None = None,
+        chatgpt_project_url: str | None = None,
+        metadata: dict | None = None,
+        now: float | None = None,
+    ) -> ChildDispatchRecord:
+        """Atomically persist one parent-to-child work contract and protocol lineage."""
+
+        parent_task_id = str(parent_task_id).strip()
+        child_key = str(child_key).strip()
+        project = str(project).strip()
+        objective = str(objective).strip()
+        cwd = str(cwd).strip()
+        prompt_text = str(prompt_text)
+        expected_branch = _optional_text(expected_branch)
+        base_ref = _optional_text(base_ref)
+        chatgpt_project_url = _optional_text(chatgpt_project_url)
+        metadata = dict(metadata or {})
+        if not parent_task_id or not child_key or not project or not objective or not cwd:
+            raise ValueError("parent task, child key, project, objective, and cwd are required")
+        if not prompt_text.strip():
+            raise ValueError("child dispatch prompt must be non-empty")
+        if len(prompt_text.encode("utf-8")) > 256 * 1024:
+            raise ValueError("child dispatch prompt exceeds 256 KiB")
+        child_task_id = str(child_task_id or f"task_{uuid.uuid4().hex[:12]}").strip()
+        if not child_task_id or child_task_id == parent_task_id:
+            raise ValueError("child_task_id must identify a different non-empty task")
+        timestamp = time.time() if now is None else float(now)
+        prompt_sha256 = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
+
+        if not worker_persistence.protocol_state_exists(self._conn, parent_task_id):
+            # A legacy parent with no lineage is a root task. Bootstrap is conservative:
+            # ambiguous legacy worker state still fails closed in worker_persistence.
+            self.bootstrap_worker_protocol(parent_task_id)
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            parent = self._conn.execute(
+                "SELECT task_id FROM tasks WHERE task_id = ?", (parent_task_id,)
+            ).fetchone()
+            if parent is None:
+                raise KeyError(f"unknown parent task: {parent_task_id}")
+            parent_protocol = self._conn.execute(
+                "SELECT task_status, root_task_id FROM worker_protocol_tasks WHERE task_id = ?",
+                (parent_task_id,),
+            ).fetchone()
+            if parent_protocol is None:
+                raise RuntimeError("parent task must have worker protocol state before dispatch")
+            if parent_protocol["task_status"] != worker_protocol_model.DurableTaskStatus.OPEN.value:
+                raise RuntimeError("completed parent task cannot create new child dispatches")
+
+            existing = self._conn.execute(
+                "SELECT * FROM child_dispatches WHERE parent_task_id = ? AND child_key = ?",
+                (parent_task_id, child_key),
+            ).fetchone()
+            if existing is not None:
+                record = _child_dispatch_from_row(existing)
+                expected = (
+                    project,
+                    objective,
+                    cwd,
+                    prompt_sha256,
+                    expected_branch,
+                    base_ref,
+                    chatgpt_project_url,
+                    metadata,
+                )
+                child = self._conn.execute(
+                    "SELECT project, objective, cwd FROM tasks WHERE task_id = ?",
+                    (record.child_task_id,),
+                ).fetchone()
+                actual = (
+                    child["project"] if child else None,
+                    child["objective"] if child else None,
+                    child["cwd"] if child else None,
+                    record.prompt_sha256,
+                    record.expected_branch,
+                    record.base_ref,
+                    record.chatgpt_project_url,
+                    record.metadata,
+                )
+                if actual != expected or (child_task_id and child_task_id != record.child_task_id):
+                    raise RuntimeError("child key already exists with a different dispatch contract")
+                self._conn.rollback()
+                return record
+
+            if self._conn.execute(
+                "SELECT 1 FROM tasks WHERE task_id = ?", (child_task_id,)
+            ).fetchone() is not None:
+                raise RuntimeError("child_task_id already exists without this dispatch contract")
+
+            self._conn.execute(
+                """INSERT INTO tasks
+                   (task_id, project, objective, cwd, state, lsm_session_id,
+                    checkpoint_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, NULL, '{}', ?, ?)""",
+                (
+                    child_task_id,
+                    project,
+                    objective,
+                    cwd,
+                    SupervisorState.QUEUED.value,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            self._conn.execute(
+                """INSERT INTO worker_protocol_tasks
+                   (task_id, revision, generation, task_status, current_worker_id,
+                    handoff_target_worker_id, handoff_requested_at, parent_task_id,
+                    root_task_id, child_key, completed_at, completion_ref)
+                   VALUES (?, 0, 0, ?, NULL, NULL, NULL, ?, ?, ?, NULL, NULL)""",
+                (
+                    child_task_id,
+                    worker_protocol_model.DurableTaskStatus.OPEN.value,
+                    parent_task_id,
+                    parent_protocol["root_task_id"],
+                    child_key,
+                ),
+            )
+            dispatch_id = f"dispatch_{uuid.uuid4().hex[:16]}"
+            self._conn.execute(
+                """INSERT INTO child_dispatches
+                   (dispatch_id, parent_task_id, child_task_id, child_key, prompt_text,
+                    prompt_sha256, expected_branch, base_ref, chatgpt_project_url, created_at, updated_at,
+                    payload_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    dispatch_id,
+                    parent_task_id,
+                    child_task_id,
+                    child_key,
+                    prompt_text,
+                    prompt_sha256,
+                    expected_branch,
+                    base_ref,
+                    chatgpt_project_url,
+                    timestamp,
+                    timestamp,
+                    json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                ),
+            )
+            self._conn.commit()
+            return self.get_child_dispatch(child_task_id)
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+
+    def get_child_dispatch(self, child_task_id: str) -> ChildDispatchRecord:
+        row = self._conn.execute(
+            "SELECT * FROM child_dispatches WHERE child_task_id = ?", (child_task_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown child dispatch: {child_task_id}")
+        return _child_dispatch_from_row(row)
+
+    def bind_child_lsm_session(self, child_task_id: str, session_id: str) -> TaskRecord:
+        """Bind the durable LSM logical session exactly once; replacements reuse it."""
+
+        self.get_child_dispatch(child_task_id)
+        session_id = str(session_id).strip()
+        if not session_id:
+            raise ValueError("session_id must be non-empty")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT lsm_session_id FROM tasks WHERE task_id = ?", (child_task_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown task: {child_task_id}")
+            existing = row["lsm_session_id"]
+            if existing not in (None, session_id):
+                raise RuntimeError(
+                    "child already belongs to a different durable LSM session; "
+                    "replacement workers must reuse the existing logical session"
+                )
+            if existing is None:
+                self._conn.execute(
+                    "UPDATE tasks SET lsm_session_id = ?, updated_at = ? WHERE task_id = ?",
+                    (session_id, time.time(), child_task_id),
+                )
+            self._conn.commit()
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+        return self.get_task(child_task_id)
+
+    def complete_child_dispatch(
+        self,
+        child_task_id: str,
+        *,
+        completion_ref: str,
+        now: float | None = None,
+    ) -> worker_protocol_model.WorkerTaskState:
+        """Finish current child worker, then its durable task, with crash-safe replay semantics."""
+
+        self.get_child_dispatch(child_task_id)
+        completion_ref = str(completion_ref).strip()
+        if not completion_ref:
+            raise ValueError("completion_ref must be non-empty")
+        ts = time.time() if now is None else float(now)
+        unresolved_action = self.unresolved_action_attempt(child_task_id)
+        if unresolved_action is not None:
+            raise RuntimeError(
+                f"child has unresolved external action {unresolved_action.attempt_id} "
+                f"in state {unresolved_action.state.value}"
+            )
+        unresolved_replacement = self.unresolved_replacement_attempt(child_task_id)
+        if unresolved_replacement is not None:
+            raise RuntimeError(
+                f"child has unresolved replacement {unresolved_replacement.attempt_id} "
+                f"in state {unresolved_replacement.state.value}"
+            )
+        unresolved_spawn = self.unresolved_child_spawn_attempt(child_task_id)
+        if unresolved_spawn is not None:
+            raise RuntimeError(
+                f"child has unresolved spawn {unresolved_spawn.attempt_id} "
+                f"in state {unresolved_spawn.state.value}"
+            )
+
+        state = self.load_worker_protocol(child_task_id)
+        if state.task_status == worker_protocol_model.DurableTaskStatus.COMPLETED:
+            if state.completion_ref != completion_ref:
+                raise RuntimeError(
+                    "child is already completed with a different completion_ref"
+                )
+            if self.get_task(child_task_id).state != SupervisorState.COMPLETED:
+                self.update_state(child_task_id, SupervisorState.COMPLETED)
+            return state
+
+        if state.current_worker_id is not None:
+            completed_worker = self.protocol_complete_worker(
+                child_task_id,
+                state.current_worker_id,
+                generation=state.generation,
+                expected_revision=state.revision,
+                now=ts,
+            )
+            if not completed_worker.accepted:
+                raise RuntimeError(
+                    f"current child worker completion rejected: {completed_worker.code.value}"
+                )
+            state = completed_worker.state
+
+        completed_task = self.protocol_complete_task(
+            child_task_id,
+            completion_ref=completion_ref,
+            expected_revision=state.revision,
+            now=ts,
+        )
+        if not completed_task.accepted:
+            raise RuntimeError(f"child task completion rejected: {completed_task.code.value}")
+        self.update_state(child_task_id, SupervisorState.COMPLETED)
+        return completed_task.state
+
+    def child_dispatches_for_parent(self, parent_task_id: str) -> list[ChildDispatchRecord]:
+        rows = self._conn.execute(
+            """SELECT * FROM child_dispatches WHERE parent_task_id = ?
+               ORDER BY created_at, dispatch_id""",
+            (parent_task_id,),
+        ).fetchall()
+        return [_child_dispatch_from_row(row) for row in rows]
+
+    def adopt_child_worker(
+        self,
+        child_task_id: str,
+        conversation_url: str,
+        *,
+        lease_seconds: float = 7200.0,
+        worker_id: str | None = None,
+        now: float | None = None,
+    ) -> worker_protocol_model.WorkerTaskState:
+        """Register/claim one exact child conversation when no other worker owns authority."""
+
+        self.get_child_dispatch(child_task_id)
+        conversation_url = str(conversation_url).strip()
+        if not conversation_url:
+            raise ValueError("conversation_url must be non-empty")
+        if float(lease_seconds) <= 0:
+            raise ValueError("lease_seconds must be positive")
+        timestamp = time.time() if now is None else float(now)
+        state = self.load_worker_protocol(child_task_id)
+        matching = [w for w in state.workers if w.conversation_ref == conversation_url]
+        if len(matching) > 1:
+            raise RuntimeError("multiple protocol workers unexpectedly share the conversation URL")
+        if state.current_worker_id is not None:
+            if matching and matching[0].worker_id == state.current_worker_id:
+                return state
+            raise RuntimeError("child already has an authoritative worker; use replacement protocol")
+        if matching:
+            candidate = matching[0]
+            if candidate.status != worker_protocol_model.WorkerLeaseStatus.CANDIDATE:
+                raise RuntimeError("existing conversation worker is terminal and cannot be re-adopted")
+        else:
+            registered = self.protocol_register_worker(
+                child_task_id,
+                conversation_url,
+                expected_revision=state.revision,
+                worker_id=worker_id,
+                now=timestamp,
+            )
+            if not registered.accepted:
+                raise RuntimeError(f"child worker registration rejected: {registered.code.value}")
+            state = registered.state
+            candidate = next(w for w in state.workers if w.conversation_ref == conversation_url)
+        claimed = self.protocol_claim_worker(
+            child_task_id,
+            candidate.worker_id,
+            expected_revision=state.revision,
+            lease_seconds=float(lease_seconds),
+            now=timestamp,
+        )
+        if not claimed.accepted:
+            raise RuntimeError(f"child worker claim rejected: {claimed.code.value}")
+        return claimed.state
+
+    def register_replacement_candidate(
+        self,
+        child_task_id: str,
+        conversation_url: str,
+        *,
+        worker_id: str | None = None,
+        now: float | None = None,
+    ) -> worker_protocol_model.WorkerTaskState:
+        """Register an exact replacement conversation as CANDIDATE without granting authority."""
+
+        self.get_child_dispatch(child_task_id)
+        conversation_url = str(conversation_url).strip()
+        if not conversation_url:
+            raise ValueError("conversation_url must be non-empty")
+        state = self.load_worker_protocol(child_task_id)
+        matching = [worker for worker in state.workers if worker.conversation_ref == conversation_url]
+        if matching:
+            if len(matching) != 1:
+                raise RuntimeError("multiple protocol workers unexpectedly share the conversation URL")
+            if matching[0].status != worker_protocol_model.WorkerLeaseStatus.CANDIDATE:
+                raise RuntimeError("replacement conversation already belongs to a terminal/active worker")
+            return state
+        decision = self.protocol_register_worker(
+            child_task_id,
+            conversation_url,
+            worker_id=worker_id,
+            expected_revision=state.revision,
+            now=now,
+        )
+        if not decision.accepted:
+            raise RuntimeError(f"replacement candidate rejected: {decision.code.value}")
+        return decision.state
+
+    def record_replacement_attempt(self, attempt: ReplacementAttempt) -> ReplacementAttempt:
+        self.get_child_dispatch(attempt.task_id)
+        worker = self.get_worker(attempt.candidate_worker_id)
+        if worker.task_id != attempt.task_id:
+            raise ValueError("replacement candidate belongs to a different task")
+        if attempt.state != ReplacementAttemptState.ARMED:
+            raise ValueError("replacement attempt must be ARMED before durable recording")
+        unresolved = self.unresolved_replacement_attempt(attempt.task_id)
+        if unresolved is not None and unresolved.attempt_id != attempt.attempt_id:
+            raise RuntimeError(
+                f"task {attempt.task_id} already has unresolved replacement {unresolved.attempt_id}"
+            )
+        payload = _replacement_attempt_payload(attempt)
+        self._conn.execute(
+            """INSERT INTO replacement_attempts
+               (attempt_id, task_id, candidate_worker_id, state, created_at, updated_at, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                attempt.attempt_id,
+                attempt.task_id,
+                attempt.candidate_worker_id,
+                attempt.state.value,
+                attempt.created_at,
+                attempt.updated_at,
+                payload,
+            ),
+        )
+        self._conn.commit()
+        return self.get_replacement_attempt(attempt.attempt_id)
+
+    def get_replacement_attempt(self, attempt_id: str) -> ReplacementAttempt:
+        row = self._conn.execute(
+            "SELECT payload_json FROM replacement_attempts WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown replacement attempt: {attempt_id}")
+        payload = json.loads(row["payload_json"])
+        payload["state"] = ReplacementAttemptState(payload["state"])
+        return ReplacementAttempt(**payload)
+
+    def unresolved_replacement_attempt(self, task_id: str) -> ReplacementAttempt | None:
+        states = (
+            ReplacementAttemptState.ARMED.value,
+            ReplacementAttemptState.LSM_TAKEOVER_SUBMITTED.value,
+            ReplacementAttemptState.RECONCILE_REQUIRED.value,
+        )
+        row = self._conn.execute(
+            """SELECT attempt_id FROM replacement_attempts
+               WHERE task_id = ? AND state IN (?, ?, ?)
+               ORDER BY created_at DESC LIMIT 1""",
+            (task_id, *states),
+        ).fetchone()
+        return self.get_replacement_attempt(row["attempt_id"]) if row is not None else None
+
+    def replacement_attempts(self, task_id: str, *, limit: int = 50) -> list[ReplacementAttempt]:
+        rows = self._conn.execute(
+            """SELECT attempt_id FROM replacement_attempts
+               WHERE task_id = ? ORDER BY created_at DESC, attempt_id LIMIT ?""",
+            (task_id, max(1, min(int(limit), 500))),
+        ).fetchall()
+        return [self.get_replacement_attempt(row["attempt_id"]) for row in rows]
+
+    def update_replacement_attempt(
+        self,
+        attempt_id: str,
+        *,
+        state: ReplacementAttemptState,
+        new_active_run_id: str | None = None,
+        last_error: str | None = None,
+        now: float | None = None,
+    ) -> ReplacementAttempt:
+        attempt = self.get_replacement_attempt(attempt_id)
+        allowed = {
+            ReplacementAttemptState.ARMED: {
+                ReplacementAttemptState.LSM_TAKEOVER_SUBMITTED,
+                ReplacementAttemptState.FAILED,
+            },
+            ReplacementAttemptState.LSM_TAKEOVER_SUBMITTED: {
+                ReplacementAttemptState.RECONCILE_REQUIRED,
+                ReplacementAttemptState.COMPLETED,
+            },
+            ReplacementAttemptState.RECONCILE_REQUIRED: {
+                ReplacementAttemptState.RECONCILE_REQUIRED,
+                ReplacementAttemptState.COMPLETED,
+            },
+        }
+        if state == attempt.state:
+            return attempt
+        if state not in allowed.get(attempt.state, set()):
+            raise RuntimeError(
+                f"invalid replacement transition {attempt.state.value} -> {state.value}"
+            )
+        attempt.state = state
+        attempt.updated_at = time.time() if now is None else float(now)
+        if new_active_run_id is not None:
+            attempt.new_active_run_id = str(new_active_run_id).strip() or None
+        if last_error is not None:
+            attempt.last_error = str(last_error)[:1000]
+        payload = _replacement_attempt_payload(attempt)
+        cursor = self._conn.execute(
+            """UPDATE replacement_attempts
+               SET state = ?, updated_at = ?, payload_json = ? WHERE attempt_id = ?""",
+            (attempt.state.value, attempt.updated_at, payload, attempt.attempt_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise KeyError(f"unknown replacement attempt: {attempt_id}")
+        self._conn.commit()
+        return self.get_replacement_attempt(attempt_id)
+
+    def record_child_spawn_attempt(self, attempt: ChildSpawnAttempt) -> ChildSpawnAttempt:
+        self.get_child_dispatch(attempt.child_task_id)
+        if attempt.state != ChildSpawnAttemptState.ARMED:
+            raise ValueError("child spawn attempt must be ARMED before durable recording")
+        if self.unresolved_child_spawn_attempt(attempt.child_task_id) is not None:
+            raise RuntimeError("child task already has an unresolved spawn attempt")
+        payload = _child_spawn_attempt_payload(attempt)
+        self._conn.execute(
+            """INSERT INTO child_spawn_attempts
+               (attempt_id, child_task_id, state, created_at, updated_at, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                attempt.attempt_id,
+                attempt.child_task_id,
+                attempt.state.value,
+                attempt.created_at,
+                attempt.updated_at,
+                payload,
+            ),
+        )
+        self._conn.commit()
+        return self.get_child_spawn_attempt(attempt.attempt_id)
+
+    def get_child_spawn_attempt(self, attempt_id: str) -> ChildSpawnAttempt:
+        row = self._conn.execute(
+            "SELECT payload_json FROM child_spawn_attempts WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown child spawn attempt: {attempt_id}")
+        payload = json.loads(row["payload_json"])
+        payload["state"] = ChildSpawnAttemptState(payload["state"])
+        return ChildSpawnAttempt(**payload)
+
+    def unresolved_child_spawn_attempt(self, child_task_id: str) -> ChildSpawnAttempt | None:
+        states = tuple(
+            state.value
+            for state in (
+                ChildSpawnAttemptState.ARMED,
+                ChildSpawnAttemptState.WINDOW_OPEN_SUBMITTED,
+                ChildSpawnAttemptState.WINDOW_BOUND,
+                ChildSpawnAttemptState.PROMPT_SUBMITTED,
+                ChildSpawnAttemptState.RECONCILE_REQUIRED,
+            )
+        )
+        placeholders = ",".join("?" for _ in states)
+        row = self._conn.execute(
+            f"""SELECT attempt_id FROM child_spawn_attempts
+                WHERE child_task_id = ? AND state IN ({placeholders})
+                ORDER BY created_at DESC LIMIT 1""",
+            (child_task_id, *states),
+        ).fetchone()
+        return self.get_child_spawn_attempt(row["attempt_id"]) if row is not None else None
+
+    def child_spawn_attempts(self, child_task_id: str, *, limit: int = 50) -> list[ChildSpawnAttempt]:
+        rows = self._conn.execute(
+            """SELECT attempt_id FROM child_spawn_attempts
+               WHERE child_task_id = ? ORDER BY created_at DESC, attempt_id LIMIT ?""",
+            (child_task_id, max(1, min(int(limit), 500))),
+        ).fetchall()
+        return [self.get_child_spawn_attempt(row["attempt_id"]) for row in rows]
+
+    def update_child_spawn_attempt(
+        self,
+        attempt_id: str,
+        *,
+        state: ChildSpawnAttemptState,
+        window_handle: int | None = None,
+        browser_pid: int | None = None,
+        conversation_url: str | None = None,
+        worker_id: str | None = None,
+        last_error: str | None = None,
+        now: float | None = None,
+    ) -> ChildSpawnAttempt:
+        attempt = self.get_child_spawn_attempt(attempt_id)
+        allowed = {
+            ChildSpawnAttemptState.ARMED: {
+                ChildSpawnAttemptState.WINDOW_OPEN_SUBMITTED,
+                ChildSpawnAttemptState.FAILED,
+            },
+            ChildSpawnAttemptState.WINDOW_OPEN_SUBMITTED: {
+                ChildSpawnAttemptState.WINDOW_BOUND,
+                ChildSpawnAttemptState.RECONCILE_REQUIRED,
+                ChildSpawnAttemptState.FAILED,
+            },
+            ChildSpawnAttemptState.WINDOW_BOUND: {
+                ChildSpawnAttemptState.PROMPT_SUBMITTED,
+                ChildSpawnAttemptState.RECONCILE_REQUIRED,
+            },
+            ChildSpawnAttemptState.PROMPT_SUBMITTED: {
+                ChildSpawnAttemptState.WINDOW_BOUND,
+                ChildSpawnAttemptState.COMPLETED,
+                ChildSpawnAttemptState.RECONCILE_REQUIRED,
+            },
+            ChildSpawnAttemptState.RECONCILE_REQUIRED: {
+                ChildSpawnAttemptState.WINDOW_BOUND,
+                ChildSpawnAttemptState.COMPLETED,
+                ChildSpawnAttemptState.RECONCILE_REQUIRED,
+            },
+        }
+        if state == attempt.state:
+            return attempt
+        if state not in allowed.get(attempt.state, set()):
+            raise RuntimeError(
+                f"invalid child spawn transition {attempt.state.value} -> {state.value}"
+            )
+        attempt.state = state
+        attempt.updated_at = time.time() if now is None else float(now)
+        if window_handle is not None:
+            attempt.window_handle = int(window_handle)
+        if browser_pid is not None:
+            attempt.browser_pid = int(browser_pid)
+        if conversation_url is not None:
+            attempt.conversation_url = str(conversation_url).strip() or None
+        if worker_id is not None:
+            attempt.worker_id = str(worker_id).strip() or None
+        if last_error is not None:
+            attempt.last_error = str(last_error)[:1000]
+        payload = _child_spawn_attempt_payload(attempt)
+        cursor = self._conn.execute(
+            """UPDATE child_spawn_attempts
+               SET state = ?, updated_at = ?, payload_json = ? WHERE attempt_id = ?""",
+            (attempt.state.value, attempt.updated_at, payload, attempt.attempt_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise KeyError(f"unknown child spawn attempt: {attempt_id}")
+        self._conn.commit()
+        return self.get_child_spawn_attempt(attempt_id)
 
     def bootstrap_worker_protocol(
         self,
@@ -1765,3 +2371,39 @@ class Registry:
         if row is None:
             return None
         return WorkspaceObservation(**json.loads(row["payload_json"]))
+
+
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
+
+
+def _child_dispatch_from_row(row) -> ChildDispatchRecord:
+    return ChildDispatchRecord(
+        dispatch_id=row["dispatch_id"],
+        parent_task_id=row["parent_task_id"],
+        child_task_id=row["child_task_id"],
+        child_key=row["child_key"],
+        prompt_text=row["prompt_text"],
+        prompt_sha256=row["prompt_sha256"],
+        expected_branch=row["expected_branch"],
+        base_ref=row["base_ref"],
+        chatgpt_project_url=row["chatgpt_project_url"],
+        created_at=float(row["created_at"]),
+        updated_at=float(row["updated_at"]),
+        metadata=json.loads(row["payload_json"] or "{}"),
+    )
+
+
+def _replacement_attempt_payload(attempt: ReplacementAttempt) -> str:
+    payload = asdict(attempt)
+    payload["state"] = attempt.state.value
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _child_spawn_attempt_payload(attempt: ChildSpawnAttempt) -> str:
+    payload = asdict(attempt)
+    payload["state"] = attempt.state.value
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)

@@ -1,6 +1,6 @@
 # Operations runbook
 
-This runbook describes the CWS 0.9 control plane. Observation and planning remain the default. Recovery mutation is still fenced and exact-window-bound; the resident watchdog may call the same current-worker executor only when explicitly started with `--auto-recover-timeouts` and a recognized delivery error passes every reconciliation gate. Automatic new-chat takeover and live-page auto-close remain disabled.
+This runbook describes the CWS 0.10 control plane. Observation and planning remain the default. Recovery mutation is still fenced and exact-window-bound; the resident watchdog may call the same current-worker executor only when explicitly started with `--auto-recover-timeouts` and a recognized delivery error passes every reconciliation gate. 0.10 additionally provides an explicitly gated initial child-conversation spawn path and a parent-AI replacement protocol. Automatic replacement-chat creation and live-page auto-close remain disabled.
 
 ## 1. Preflight
 
@@ -49,6 +49,12 @@ python -m cws register `
 ```
 
 The conversation URL is a worker lease, not the durable task identity. The Local Shell logical session and actual workspace remain the execution/recovery truth.
+
+### Parent-AI child scheduling
+
+Persist each child before creating a ChatGPT conversation. `child-create` stores the exact prompt, cwd, optional expected branch/base ref, and optional explicit ChatGPT Project root. It performs no browser or Git mutation. A child can then be manually adopted, or the parent can use the separate `child-spawn-arm` -> `child-spawn-open` -> `child-spawn-send` path. `open` and `send` each require explicit normal-browser mutation opt-in and exact child confirmation. An ambiguous external result must go through `child-spawn-reconcile`; it is never permission to resend.
+
+The child should start its own Local Shell MCP durable logical session and bind it with `child-bind-session`. After local work/tests/commit are verified, use `child-complete --completion-ref ...`; `child-status PARENT` exposes the LSM session id, generation, worker state, and durable completion. Replacement uses `replacement-register` / `replacement-arm` / `replacement-submit`, one supported Local Shell MCP `session_manage(..., takeover=true)` call, then `replacement-complete` after fresh LSM/workspace evidence. See `CHILD_SCHEDULER.md` for the complete command sequence and prompt contract.
 
 ## 3. Read-only observation
 
@@ -176,7 +182,7 @@ Before changing CWS or Local Shell MCP:
 
 The direct LSM file adapter is schema-gated. If LSM changes session/job durable formats, CWS should fail closed until the adapter is explicitly updated and tested.
 
-CWS registry schema v6 is additive over v5. It preserves all v5 task/worker, observation, action, watchdog, capability, worker-window, probe-slot, and probe-mutation rows/indexes, then adds durable worker-protocol task state, per-worker lease metadata, and append-only protocol events keyed to the existing task/worker identities. Protocol writes use a revision compare-and-swap under `BEGIN IMMEDIATE`; ambiguous legacy worker combinations fail closed instead of inventing fresh authority. The v5 global unresolved-probe and per-task unresolved-action uniqueness fences remain unchanged. CWS 0.9 does not change the schema; ACK replay-suppression signatures are stored in the existing bounded action metadata.
+CWS registry schema v8 is additive. Schema v6 preserves all v5 task/worker, observation, action, watchdog, capability, worker-window, probe-slot, and probe-mutation rows/indexes and adds durable worker-protocol task state, per-worker lease metadata, and append-only protocol events. Schema v7 adds durable child-dispatch and replacement-attempt records. Schema v8 adds explicit child ChatGPT Project binding plus child-spawn write-ahead records; an explicit migration also adds the project column to registries that had already reached schema v7. Protocol writes keep revision compare-and-swap semantics, and the older unresolved-probe/action uniqueness fences remain unchanged.
 
 ## 9. Data handling
 

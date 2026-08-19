@@ -42,6 +42,84 @@ class TaskRecord:
 
 
 @dataclass(slots=True)
+class ChildDispatchRecord:
+    dispatch_id: str
+    parent_task_id: str
+    child_task_id: str
+    child_key: str
+    prompt_text: str
+    prompt_sha256: str
+    expected_branch: str | None
+    base_ref: str | None
+    chatgpt_project_url: str | None
+    created_at: float
+    updated_at: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class ReplacementAttemptState(StrEnum):
+    ARMED = "ARMED"
+    LSM_TAKEOVER_SUBMITTED = "LSM_TAKEOVER_SUBMITTED"
+    RECONCILE_REQUIRED = "RECONCILE_REQUIRED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+@dataclass(slots=True)
+class ReplacementAttempt:
+    attempt_id: str
+    task_id: str
+    candidate_worker_id: str
+    state: ReplacementAttemptState
+    expected_revision: int
+    previous_worker_id: str | None
+    previous_generation: int
+    lsm_session_id: str
+    previous_active_run_id: str | None
+    workspace_git_head: str | None
+    workspace_status_hash: str | None
+    expected_branch: str | None
+    mode: str
+    takeover_reason: str
+    created_at: float
+    updated_at: float
+    new_active_run_id: str | None = None
+    last_error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class ChildSpawnAttemptState(StrEnum):
+    ARMED = "ARMED"
+    WINDOW_OPEN_SUBMITTED = "WINDOW_OPEN_SUBMITTED"
+    WINDOW_BOUND = "WINDOW_BOUND"
+    PROMPT_SUBMITTED = "PROMPT_SUBMITTED"
+    RECONCILE_REQUIRED = "RECONCILE_REQUIRED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+@dataclass(slots=True)
+class ChildSpawnAttempt:
+    attempt_id: str
+    child_task_id: str
+    state: ChildSpawnAttemptState
+    owner_token: str
+    project_url: str
+    project_id: str
+    tagged_project_url: str
+    prompt_sha256: str
+    chrome_executable: str
+    created_at: float
+    updated_at: float
+    window_handle: int | None = None
+    browser_pid: int | None = None
+    conversation_url: str | None = None
+    worker_id: str | None = None
+    last_error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class WorkerRecord:
     worker_id: str
     task_id: str
@@ -233,6 +311,7 @@ class WorkspaceObservation:
     is_git_repo: bool | None = None
     git_root: str | None = None
     git_head: str | None = None
+    git_branch: str | None = None
     git_dirty: bool | None = None
     git_status_hash: str | None = None
     git_status_entries: list[str] = field(default_factory=list)

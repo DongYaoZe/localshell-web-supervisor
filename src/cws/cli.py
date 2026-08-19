@@ -28,6 +28,15 @@ from .dispatch_runtime import (
 )
 from .doctor import DoctorStatus, run_doctor
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
+from .child_spawn import (
+    ChildSpawnBlocked,
+    ChromeUiaChildSpawnTransport,
+    arm_child_spawn,
+    child_spawn_payload,
+    execute_child_spawn_open,
+    execute_child_spawn_prompt,
+    reconcile_child_spawn,
+)
 from .lifecycle import PageCloseEvidence, evaluate_page_close_evidence
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
@@ -39,6 +48,14 @@ from .probe_operator import (
 )
 from .ram import MemoryProbeUnavailable, observe_system_memory, observe_windows_process_group
 from .reconcile import build_reconciliation_record
+from .replacement import (
+    ReplacementBlocked,
+    arm_replacement,
+    complete_replacement,
+    lsm_takeover_request,
+    replacement_payload,
+    submit_replacement,
+)
 from .recovery import recommend
 from .registry import Registry
 from .scheduler import attention_queue
@@ -67,7 +84,7 @@ def default_db_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.9 control plane)")
+    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.10 child scheduler)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=None, help="registry sqlite path (default: .cws/registry.sqlite3)")
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
@@ -82,6 +99,147 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--session-id")
     register.add_argument("--conversation-url")
     register.add_argument("--conversation-id")
+
+    child_create = sub.add_parser(
+        "child-create",
+        help="persist one durable child assignment; does not open a browser or mutate Git",
+    )
+    child_create.add_argument("parent_task_id")
+    child_create.add_argument("--child-key", required=True)
+    child_create.add_argument("--child-task-id")
+    child_create.add_argument("--project", required=True)
+    child_create.add_argument("--objective", required=True)
+    child_create.add_argument("--cwd", required=True)
+    prompt_group = child_create.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument("--prompt")
+    prompt_group.add_argument("--prompt-file")
+    child_create.add_argument("--expected-branch")
+    child_create.add_argument("--base-ref")
+    child_create.add_argument(
+        "--chatgpt-project-url",
+        help="explicit normal ChatGPT Project root used only by gated child-spawn",
+    )
+    child_create.add_argument("--metadata-json")
+    child_create.add_argument("--json", action="store_true")
+
+    child_prompt = sub.add_parser("child-prompt", help="print the exact persisted child prompt")
+    child_prompt.add_argument("child_task_id")
+
+    child_bind_session = sub.add_parser(
+        "child-bind-session",
+        help="bind a child to its durable LSM logical session; replacement workers reuse it",
+    )
+    child_bind_session.add_argument("child_task_id")
+    child_bind_session.add_argument("--session-id", required=True)
+
+    child_complete = sub.add_parser(
+        "child-complete",
+        help="finish the current child worker and durable child task with a completion reference",
+    )
+    child_complete.add_argument("child_task_id")
+    child_complete.add_argument("--completion-ref", required=True)
+    child_complete.add_argument("--json", action="store_true")
+
+    child_status = sub.add_parser(
+        "child-status", help="show durable child assignments and worker authority for one parent"
+    )
+    child_status.add_argument("parent_task_id")
+    child_status.add_argument("--json", action="store_true")
+
+    child_adopt = sub.add_parser(
+        "child-adopt",
+        help="adopt an exact existing ChatGPT conversation into a child task; opens no page",
+    )
+    child_adopt.add_argument("child_task_id")
+    child_adopt.add_argument("--conversation-url", required=True)
+    child_adopt.add_argument("--worker-id")
+    child_adopt.add_argument("--lease-seconds", type=float, default=7200.0)
+    child_adopt.add_argument("--json", action="store_true")
+
+    child_spawn_arm = sub.add_parser(
+        "child-spawn-arm",
+        help="reconcile and write-ahead arm initial child conversation creation; no browser mutation",
+    )
+    child_spawn_arm.add_argument("child_task_id")
+    child_spawn_arm.add_argument("--chrome-executable")
+    child_spawn_arm.add_argument("--max-evidence-age", type=float, default=60.0)
+    child_spawn_arm.add_argument("--json", action="store_true")
+
+    child_spawn_open = sub.add_parser(
+        "child-spawn-open",
+        help="explicitly open the one CWS-tagged project window for an ARMED child spawn",
+    )
+    child_spawn_open.add_argument("attempt_id")
+    child_spawn_open.add_argument("--enable-normal-browser-mutation", action="store_true")
+    child_spawn_open.add_argument("--confirm-child", required=True)
+    child_spawn_open.add_argument("--json", action="store_true")
+
+    child_spawn_send = sub.add_parser(
+        "child-spawn-send",
+        help="explicitly send the persisted child prompt in the exact CWS-owned project window",
+    )
+    child_spawn_send.add_argument("attempt_id")
+    child_spawn_send.add_argument("--enable-normal-browser-mutation", action="store_true")
+    child_spawn_send.add_argument("--confirm-child", required=True)
+    child_spawn_send.add_argument("--lease-seconds", type=float, default=7200.0)
+    child_spawn_send.add_argument("--json", action="store_true")
+
+    child_spawn_reconcile = sub.add_parser(
+        "child-spawn-reconcile",
+        help="read-only reconcile an interrupted child-spawn; never opens a window or sends",
+    )
+    child_spawn_reconcile.add_argument("attempt_id")
+    child_spawn_reconcile.add_argument("--lease-seconds", type=float, default=7200.0)
+    child_spawn_reconcile.add_argument("--json", action="store_true")
+
+    child_spawn_status = sub.add_parser(
+        "child-spawn-status", help="show durable child-spawn write-ahead history"
+    )
+    child_spawn_status.add_argument("child_task_id")
+    child_spawn_status.add_argument("--limit", type=int, default=20)
+    child_spawn_status.add_argument("--json", action="store_true")
+
+    replacement_register = sub.add_parser(
+        "replacement-register",
+        help="register an exact replacement conversation as a non-authoritative candidate",
+    )
+    replacement_register.add_argument("child_task_id")
+    replacement_register.add_argument("--conversation-url", required=True)
+    replacement_register.add_argument("--worker-id")
+    replacement_register.add_argument("--json", action="store_true")
+
+    replacement_arm = sub.add_parser(
+        "replacement-arm",
+        help="reconcile LSM/workspace and durably arm one replacement before LSM takeover",
+    )
+    replacement_arm.add_argument("child_task_id")
+    replacement_arm.add_argument("--candidate-worker-id", required=True)
+    replacement_arm.add_argument("--max-evidence-age", type=float, default=60.0)
+    replacement_arm.add_argument("--json", action="store_true")
+
+    replacement_submit = sub.add_parser(
+        "replacement-submit",
+        help="persist one-time LSM takeover authority and print the supported MCP request",
+    )
+    replacement_submit.add_argument("attempt_id")
+    replacement_submit.add_argument("--json", action="store_true")
+
+    replacement_complete = sub.add_parser(
+        "replacement-complete",
+        help="publish replacement worker authority after the LSM takeover is observable",
+    )
+    replacement_complete.add_argument("attempt_id")
+    replacement_complete.add_argument("--new-run-id", required=True)
+    replacement_complete.add_argument("--lease-seconds", type=float, default=7200.0)
+    replacement_complete.add_argument("--max-evidence-age", type=float, default=60.0)
+    replacement_complete.add_argument("--json", action="store_true")
+
+    replacement_status = sub.add_parser(
+        "replacement-status", help="show replacement write-ahead history for one child task"
+    )
+    replacement_status.add_argument("child_task_id")
+    replacement_status.add_argument("--limit", type=int, default=20)
+    replacement_status.add_argument("--json", action="store_true")
 
     status = sub.add_parser("status", help="show registered task state")
     status.add_argument("--json", action="store_true")
@@ -816,6 +974,317 @@ def main(argv: list[str] | None = None) -> int:
                 conversation_id=args.conversation_id,
             )
             print(task.task_id)
+            return 0
+
+        if args.command == "child-create":
+            prompt_text = (
+                args.prompt
+                if args.prompt is not None
+                else Path(args.prompt_file).read_text(encoding="utf-8-sig")
+            )
+            metadata = json.loads(args.metadata_json) if args.metadata_json else {}
+            if not isinstance(metadata, dict):
+                raise ValueError("--metadata-json must be a JSON object")
+            dispatch = registry.create_child_dispatch(
+                args.parent_task_id,
+                child_key=args.child_key,
+                child_task_id=args.child_task_id,
+                project=args.project,
+                objective=args.objective,
+                cwd=args.cwd,
+                prompt_text=prompt_text,
+                expected_branch=args.expected_branch,
+                base_ref=args.base_ref,
+                chatgpt_project_url=args.chatgpt_project_url,
+                metadata=metadata,
+            )
+            if args.json:
+                _print_json(asdict(dispatch))
+            else:
+                print(
+                    f"{dispatch.child_task_id} dispatch={dispatch.dispatch_id} "
+                    f"prompt_sha256={dispatch.prompt_sha256}"
+                )
+            return 0
+
+        if args.command == "child-prompt":
+            print(registry.get_child_dispatch(args.child_task_id).prompt_text, end="")
+            return 0
+
+        if args.command == "child-bind-session":
+            task = registry.bind_child_lsm_session(args.child_task_id, args.session_id)
+            print(f"{task.task_id} session={task.lsm_session_id}")
+            return 0
+
+        if args.command == "child-complete":
+            state = registry.complete_child_dispatch(
+                args.child_task_id,
+                completion_ref=args.completion_ref,
+            )
+            payload = {
+                "child_task_id": args.child_task_id,
+                "durable_task_status": state.task_status.value,
+                "completion_ref": state.completion_ref,
+                "generation": state.generation,
+                "protocol_revision": state.revision,
+                "legacy_task_state": registry.get_task(args.child_task_id).state.value,
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                print(
+                    f"{args.child_task_id} status={state.task_status.value} "
+                    f"completion_ref={state.completion_ref}"
+                )
+            return 0
+
+        if args.command == "child-status":
+            rows = []
+            for dispatch in registry.child_dispatches_for_parent(args.parent_task_id):
+                task = registry.get_task(dispatch.child_task_id)
+                protocol = registry.load_worker_protocol(dispatch.child_task_id)
+                rows.append(
+                    {
+                        "dispatch": asdict(dispatch),
+                        "task_state": task.state.value,
+                        "lsm_session_id": task.lsm_session_id,
+                        "protocol_revision": protocol.revision,
+                        "generation": protocol.generation,
+                        "durable_task_status": protocol.task_status.value,
+                        "current_worker_id": protocol.current_worker_id,
+                        "workers": [
+                            {
+                                "worker_id": worker.worker_id,
+                                "conversation_ref": worker.conversation_ref,
+                                "status": worker.status.value,
+                                "generation": worker.generation,
+                                "lease_expires_at": worker.lease_expires_at,
+                            }
+                            for worker in protocol.workers
+                        ],
+                    }
+                )
+            if args.json:
+                _print_json(rows)
+            else:
+                for row in rows:
+                    dispatch = row["dispatch"]
+                    print(
+                        f"{dispatch['child_key']}: {dispatch['child_task_id']} "
+                        f"status={row['durable_task_status']} generation={row['generation']} "
+                        f"worker={row['current_worker_id'] or '-'}"
+                    )
+            return 0
+
+        if args.command == "child-adopt":
+            state = registry.adopt_child_worker(
+                args.child_task_id,
+                args.conversation_url,
+                lease_seconds=args.lease_seconds,
+                worker_id=args.worker_id,
+            )
+            worker = next(w for w in state.workers if w.worker_id == state.current_worker_id)
+            payload = {
+                "child_task_id": args.child_task_id,
+                "worker_id": worker.worker_id,
+                "generation": state.generation,
+                "revision": state.revision,
+                "conversation_url": worker.conversation_ref,
+                "lease_expires_at": worker.lease_expires_at,
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                print(
+                    f"{worker.worker_id} generation={state.generation}; "
+                    "conversation adopted, no browser page was opened"
+                )
+            return 0
+
+        if args.command == "child-spawn-arm":
+            workspace = _refresh_workspace(registry, args.child_task_id, workspace_probe)
+            chrome_executable = args.chrome_executable or ChromeUiaProbe().chrome_executable
+            attempt = arm_child_spawn(
+                registry,
+                child_task_id=args.child_task_id,
+                chrome_executable=chrome_executable or "",
+                workspace=workspace,
+                max_evidence_age_s=args.max_evidence_age,
+            )
+            if args.json:
+                _print_json(child_spawn_payload(attempt))
+            else:
+                print(
+                    f"{attempt.attempt_id} state={attempt.state.value} project={attempt.project_id}; "
+                    "no browser mutation performed"
+                )
+            return 0
+
+        if args.command in {"child-spawn-open", "child-spawn-send"}:
+            attempt = registry.get_child_spawn_attempt(args.attempt_id)
+            if args.confirm_child != attempt.child_task_id:
+                raise ChildSpawnBlocked(
+                    ["--confirm-child must exactly match the durable child task id"]
+                )
+            if not args.enable_normal_browser_mutation:
+                raise ChildSpawnBlocked(
+                    ["normal-browser child-spawn mutation is disabled without explicit opt-in"]
+                )
+            transport = ChromeUiaChildSpawnTransport(
+                chrome_executable=attempt.chrome_executable,
+                enabled=True,
+            )
+            if args.command == "child-spawn-open":
+                result = execute_child_spawn_open(
+                    registry,
+                    attempt_id=args.attempt_id,
+                    transport=transport,
+                )
+                success = result.state.value == "WINDOW_BOUND"
+            else:
+                result = execute_child_spawn_prompt(
+                    registry,
+                    attempt_id=args.attempt_id,
+                    transport=transport,
+                    lease_seconds=args.lease_seconds,
+                )
+                success = result.state.value == "COMPLETED"
+            if args.json:
+                _print_json(child_spawn_payload(result))
+            else:
+                print(
+                    f"{result.attempt_id} state={result.state.value} "
+                    f"conversation={result.conversation_url or '-'}"
+                )
+            return 0 if success else 14
+
+        if args.command == "child-spawn-reconcile":
+            attempt = registry.get_child_spawn_attempt(args.attempt_id)
+            transport = ChromeUiaChildSpawnTransport(
+                chrome_executable=attempt.chrome_executable,
+                enabled=False,
+            )
+            result = reconcile_child_spawn(
+                registry,
+                attempt_id=args.attempt_id,
+                transport=transport,
+                lease_seconds=args.lease_seconds,
+            )
+            if args.json:
+                _print_json(child_spawn_payload(result))
+            else:
+                print(
+                    f"{result.attempt_id} state={result.state.value} "
+                    f"conversation={result.conversation_url or '-'}"
+                )
+            return 0 if result.state.value in {"WINDOW_BOUND", "COMPLETED"} else 14
+
+        if args.command == "child-spawn-status":
+            history = registry.child_spawn_attempts(args.child_task_id, limit=args.limit)
+            if args.json:
+                _print_json([child_spawn_payload(attempt) for attempt in history])
+            else:
+                for attempt in history:
+                    print(
+                        f"{attempt.attempt_id} {attempt.state.value:24} "
+                        f"project={attempt.project_id} conversation={attempt.conversation_url or '-'}"
+                    )
+            return 0
+
+        if args.command == "replacement-register":
+            state = registry.register_replacement_candidate(
+                args.child_task_id,
+                args.conversation_url,
+                worker_id=args.worker_id,
+            )
+            candidate = next(
+                worker for worker in state.workers if worker.conversation_ref == args.conversation_url
+            )
+            payload = {
+                "child_task_id": args.child_task_id,
+                "worker_id": candidate.worker_id,
+                "status": candidate.status.value,
+                "protocol_revision": state.revision,
+                "conversation_url": candidate.conversation_ref,
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                print(
+                    f"{candidate.worker_id} status={candidate.status.value}; "
+                    "candidate registered, no execution authority granted"
+                )
+            return 0
+
+        if args.command == "replacement-arm":
+            lsm = _refresh_lsm(registry, args.child_task_id, adapter)
+            workspace = _refresh_workspace(registry, args.child_task_id, workspace_probe)
+            attempt = arm_replacement(
+                registry,
+                task_id=args.child_task_id,
+                candidate_worker_id=args.candidate_worker_id,
+                lsm=lsm,
+                workspace=workspace,
+                max_evidence_age_s=args.max_evidence_age,
+            )
+            if args.json:
+                _print_json(replacement_payload(attempt))
+            else:
+                print(
+                    f"{attempt.attempt_id} state={attempt.state.value} mode={attempt.mode}; "
+                    "run replacement-submit before exactly one LSM takeover call"
+                )
+            return 0
+
+        if args.command == "replacement-submit":
+            attempt = submit_replacement(registry, args.attempt_id)
+            payload = {
+                "attempt": replacement_payload(attempt),
+                "lsm_takeover_request": lsm_takeover_request(attempt),
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                print(
+                    f"{attempt.attempt_id} state={attempt.state.value}; "
+                    "LSM takeover is authorized exactly once; do not replay an ambiguous call"
+                )
+                _print_json(payload["lsm_takeover_request"])
+            return 0
+
+        if args.command == "replacement-complete":
+            attempt = registry.get_replacement_attempt(args.attempt_id)
+            lsm = _refresh_lsm(registry, attempt.task_id, adapter)
+            workspace = _refresh_workspace(registry, attempt.task_id, workspace_probe)
+            completed = complete_replacement(
+                registry,
+                attempt_id=args.attempt_id,
+                new_active_run_id=args.new_run_id,
+                lsm=lsm,
+                workspace=workspace,
+                lease_seconds=args.lease_seconds,
+                max_evidence_age_s=args.max_evidence_age,
+            )
+            if args.json:
+                _print_json(replacement_payload(completed))
+            else:
+                state = registry.load_worker_protocol(completed.task_id)
+                print(
+                    f"{completed.attempt_id} state={completed.state.value} "
+                    f"worker={state.current_worker_id} generation={state.generation}"
+                )
+            return 0
+
+        if args.command == "replacement-status":
+            history = registry.replacement_attempts(args.child_task_id, limit=args.limit)
+            if args.json:
+                _print_json([replacement_payload(attempt) for attempt in history])
+            else:
+                for attempt in history:
+                    print(
+                        f"{attempt.attempt_id} {attempt.state.value:24} "
+                        f"candidate={attempt.candidate_worker_id} mode={attempt.mode}"
+                    )
             return 0
 
         if args.command == "add-worker":
@@ -1732,6 +2201,16 @@ def main(argv: list[str] | None = None) -> int:
     except CdpProbeUnavailable as exc:
         print(f"CDP probe unavailable: {exc}", file=sys.stderr)
         return 7
+    except ChildSpawnBlocked as exc:
+        print("child spawn blocked:", file=sys.stderr)
+        for blocker in exc.blockers:
+            print(f"- {blocker}", file=sys.stderr)
+        return 14
+    except ReplacementBlocked as exc:
+        print("replacement blocked:", file=sys.stderr)
+        for blocker in exc.blockers:
+            print(f"- {blocker}", file=sys.stderr)
+        return 13
     except (DispatchDisabled, ActionBlocked, UiaActionUnavailable) as exc:
         print(f"dispatch blocked: {exc}", file=sys.stderr)
         return 12

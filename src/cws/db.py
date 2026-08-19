@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 # Kept as a named baseline so migration tests can construct a real schema-v5 database.
 SCHEMA_V5 = r"""
@@ -233,7 +233,57 @@ CREATE INDEX IF NOT EXISTS idx_worker_protocol_events_task_revision
     ON worker_protocol_events(task_id, revision, event_index);
 """
 
-SCHEMA = SCHEMA_V5 + SCHEMA_V6
+SCHEMA_V7 = r"""
+CREATE TABLE IF NOT EXISTS child_dispatches (
+    dispatch_id TEXT PRIMARY KEY,
+    parent_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE RESTRICT,
+    child_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id) ON DELETE CASCADE,
+    child_key TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    prompt_sha256 TEXT NOT NULL,
+    expected_branch TEXT,
+    base_ref TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(parent_task_id, child_key)
+);
+CREATE INDEX IF NOT EXISTS idx_child_dispatches_parent_time
+    ON child_dispatches(parent_task_id, created_at, dispatch_id);
+CREATE TABLE IF NOT EXISTS replacement_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    candidate_worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE RESTRICT,
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_replacement_attempts_task_time
+    ON replacement_attempts(task_id, created_at DESC, attempt_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_replacement_attempts_one_unresolved
+    ON replacement_attempts(task_id)
+    WHERE state IN ('ARMED', 'LSM_TAKEOVER_SUBMITTED', 'RECONCILE_REQUIRED');
+"""
+
+SCHEMA_V8 = r"""
+CREATE TABLE IF NOT EXISTS child_spawn_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    child_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_child_spawn_attempts_task_time
+    ON child_spawn_attempts(child_task_id, created_at DESC, attempt_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_child_spawn_attempts_one_unresolved
+    ON child_spawn_attempts(child_task_id)
+    WHERE state IN ('ARMED', 'WINDOW_OPEN_SUBMITTED', 'WINDOW_BOUND',
+                    'PROMPT_SUBMITTED', 'RECONCILE_REQUIRED');
+"""
+
+SCHEMA = SCHEMA_V5 + SCHEMA_V6 + SCHEMA_V7 + SCHEMA_V8
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
@@ -251,6 +301,11 @@ def connect(path: str | Path) -> sqlite3.Connection:
             f"unsupported CWS registry schema version {version}; expected <= {SCHEMA_VERSION}"
         )
     conn.executescript(SCHEMA)
+    child_dispatch_columns = {
+        str(row["name"]) for row in conn.execute("PRAGMA table_info(child_dispatches)").fetchall()
+    }
+    if "chatgpt_project_url" not in child_dispatch_columns:
+        conn.execute("ALTER TABLE child_dispatches ADD COLUMN chatgpt_project_url TEXT")
     if version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
