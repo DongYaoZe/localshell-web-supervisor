@@ -32,6 +32,11 @@ from .lifecycle import PageCloseEvidence, evaluate_page_close_evidence
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
 from .models import PageCapabilityKind, SupervisorState, WorkerStatus
+from .probe_operator import (
+    classify_probe_operation,
+    load_probe_reconciliation_evidence,
+    probe_operation_payload,
+)
 from .ram import MemoryProbeUnavailable, observe_system_memory, observe_windows_process_group
 from .reconcile import build_reconciliation_record
 from .recovery import recommend
@@ -285,6 +290,26 @@ def build_parser() -> argparse.ArgumentParser:
     action_cancel.add_argument("attempt_id")
     action_cancel.add_argument("--reason", required=True)
     action_cancel.add_argument("--json", action="store_true")
+
+    probe_op_status = sub.add_parser(
+        "probe-op-status",
+        help="show a durable probe mutation operation without observing or changing a browser",
+    )
+    probe_op_status.add_argument("operation_id", nargs="?")
+    probe_op_status.add_argument(
+        "--latest",
+        action="store_true",
+        help="show the latest operation even when it is terminal; default selects unresolved",
+    )
+    probe_op_status.add_argument("--json", action="store_true")
+
+    probe_op_reconcile = sub.add_parser(
+        "probe-op-reconcile",
+        help="reconcile one durable probe mutation from bounded previously-observed local evidence",
+    )
+    probe_op_reconcile.add_argument("operation_id")
+    probe_op_reconcile.add_argument("--file", required=True)
+    probe_op_reconcile.add_argument("--json", action="store_true")
 
     lifecycle = sub.add_parser(
         "evaluate-page-close",
@@ -1090,6 +1115,73 @@ def main(argv: list[str] | None = None) -> int:
                     f"{updated.attempt_id} state={updated.state.value}; local duplicate-send lock "
                     "released. This does not undo any external side effect."
                 )
+            return 0
+
+        if args.command == "probe-op-status":
+            if args.operation_id and args.latest:
+                raise ValueError("operation_id and --latest are mutually exclusive")
+            if args.operation_id:
+                operation = registry.get_probe_mutation_operation(args.operation_id)
+                selection = "exact"
+            elif args.latest:
+                rows = registry.probe_mutation_operations(limit=1)
+                operation = rows[0] if rows else None
+                selection = "latest"
+            else:
+                operation = registry.unresolved_probe_mutation_operation()
+                selection = "unresolved"
+            payload = probe_operation_payload(operation, selection=selection)
+            if args.json:
+                _print_json(payload)
+            elif operation is None:
+                print(f"probe operation: none (selection={selection})")
+            else:
+                print(
+                    f"{operation.operation_id} kind={operation.kind.value} "
+                    f"state={operation.state.value} classification={payload['classification']} "
+                    f"task={operation.target_task_id} worker={operation.target_worker_id}"
+                )
+                if operation.last_outcome:
+                    print(f"  last_outcome: {operation.last_outcome}")
+                if operation.last_error:
+                    print(f"  detail: {operation.last_error}")
+            return 0
+
+        if args.command == "probe-op-reconcile":
+            before = registry.get_probe_mutation_operation(args.operation_id)
+            before_classification = classify_probe_operation(before)
+            if before_classification in {"COMPLETED", "TERMINAL"}:
+                raise ValueError(
+                    f"probe operation {before.operation_id} is terminal in state {before.state.value}"
+                )
+            observation = load_probe_reconciliation_evidence(args.file, before)
+            after = registry.reconcile_probe_mutation_operation(
+                before.operation_id,
+                observation,
+            )
+            after_classification = classify_probe_operation(after)
+            payload = {
+                "operation_id": after.operation_id,
+                "before_state": before.state.value,
+                "state": after.state.value,
+                "classification": after_classification,
+                "last_outcome": after.last_outcome,
+                "reconcile_attempts": after.reconcile_attempts,
+                "completed": after_classification == "COMPLETED",
+                "unresolved": after_classification in {"UNRESOLVED", "BLOCKED"},
+                "blocked": after_classification == "BLOCKED",
+                "operation": asdict(after),
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                print(
+                    f"{after.operation_id} state={after.state.value} "
+                    f"classification={after_classification} "
+                    f"outcome={after.last_outcome or 'none'}"
+                )
+                if after_classification == "BLOCKED" and after.last_error:
+                    print(f"  reconcile_required: {after.last_error}")
             return 0
 
         if args.command == "evaluate-page-close":
