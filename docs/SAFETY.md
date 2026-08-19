@@ -98,8 +98,8 @@ matches, changed HWND/PID/executable identity, or incomplete observation stays f
 - Production pool policy still pins live LSM work, active generation, and ambiguous recovery states as `DO_NOT_CLOSE`; capability evidence does not authorize automatic eviction.
 - Page-continuity capabilities are versioned, context-bound, expiring, and only used when explicitly selected.
 - The durable probe model permits at most one reusable slot and at most one unresolved mutation operation; stale or ambiguous ownership blocks replacement rather than opening another window.
-- The 0.7 orchestration layer is advisory: even a selected `recommend-action` decision has `mutation_allowed=false` and cannot bypass the explicit executor.
-- The 0.7 worker-lease protocol uses revision/generation fencing so a superseded or stale conversation cannot regain authority with a late heartbeat; its persistence/browser-creation adapters are intentionally not automated yet.
+- The 0.8 orchestration layer is advisory: even a selected `recommend-action` decision has `mutation_allowed=false` and cannot bypass the explicit executor.
+- The 0.8 worker-lease protocol persists revision/generation authority with atomic compare-and-swap so a superseded, stale, restarted, or wall-clock-rollback conversation cannot regain authority. Automatic browser conversation creation remains disabled.
 - Anonymous/localhost experiments cannot satisfy the page-close safety gate.
 - Never bulk-close ambiguous unmarked user windows.
 

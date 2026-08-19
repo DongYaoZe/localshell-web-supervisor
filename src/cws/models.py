@@ -66,7 +66,11 @@ class WorkerWindowBinding:
     expires_at: float
 
     def is_fresh(self, *, now: float) -> bool:
-        return self.expires_at > float(now)
+        current = float(now)
+        return (
+            float(self.bound_at) <= float(self.observed_at) <= current < float(self.expires_at)
+            and float(self.expires_at) >= float(self.observed_at)
+        )
 
 
 class PageCapabilityKind(StrEnum):
@@ -112,7 +116,11 @@ class ProbeWindowSlotBinding:
     expires_at: float
 
     def is_fresh(self, *, now: float) -> bool:
-        return self.expires_at > float(now)
+        current = float(now)
+        return (
+            float(self.bound_at) <= float(self.observed_at) <= current < float(self.expires_at)
+            and float(self.expires_at) >= float(self.observed_at)
+        )
 
 
 class ProbeMutationKind(StrEnum):

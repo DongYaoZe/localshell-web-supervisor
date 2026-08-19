@@ -1,6 +1,6 @@
 # Operations runbook
 
-This runbook describes the CWS 0.7 control plane. Observation and planning remain the default; recovery mutation is an explicit one-shot operation and the resident watchdog still does not auto-dispatch or auto-close live pages.
+This runbook describes the CWS 0.8 control plane. Observation and planning remain the default; recovery mutation is an explicit one-shot operation and the resident watchdog still does not auto-dispatch or auto-close live pages in this release.
 
 ## 1. Preflight
 

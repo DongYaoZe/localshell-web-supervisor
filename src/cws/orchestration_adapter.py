@@ -203,6 +203,9 @@ class AdvisoryOrchestrationAdapter:
             previous_reconciliation=previous_reconciliation,
             current_reconciliation=current_reconciliation,
             unresolved_action=unresolved_action,
+            unresolved_probe_mutation=(
+                unresolved_probe if unresolved_probe is not _UNSET else None
+            ),
             worker_lease_expires_at=runtime.worker_lease_expires_at,
             last_recovery_at=last_recovery_at,
             last_scheduled_at=last_scheduled_at,

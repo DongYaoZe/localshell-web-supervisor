@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import time
 from enum import StrEnum
 
 from .models import (
@@ -141,6 +142,8 @@ def _binding_from_new_match(
 def decide_probe_reconciliation(
     operation: ProbeMutationOperation,
     observation: ProbeMutationObservation,
+    *,
+    now: float | None = None,
 ) -> ProbeReconcileDecision:
     """Classify one bounded read-only observation of a durable probe mutation.
 
@@ -149,6 +152,13 @@ def decide_probe_reconciliation(
     flight. Exact unique CWS-owned evidence may be adopted; multiple, changed, or incomplete
     evidence must remain fenced.
     """
+    current = time.time() if now is None else float(now)
+    if float(observation.observed_at) > current:
+        return ProbeReconcileDecision(
+            ProbeReconcileOutcome.UNKNOWN_OBSERVATION,
+            ProbeMutationState.RECONCILE_REQUIRED,
+            "probe observation timestamp is in the future",
+        )
     if not observation.complete or observation.error:
         return ProbeReconcileDecision(
             ProbeReconcileOutcome.UNKNOWN_OBSERVATION,

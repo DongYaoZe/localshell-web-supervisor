@@ -36,6 +36,7 @@ class DecisionCode(StrEnum):
     FENCED_WORKER = "fenced_worker"
     STALE_GENERATION = "stale_generation"
     LEASE_EXPIRED = "lease_expired"
+    CLOCK_ROLLBACK = "clock_rollback"
     INVALID_HANDOFF_TARGET = "invalid_handoff_target"
     TAKEOVER_NOT_ELIGIBLE = "takeover_not_eligible"
     ACTIVE_WORKER_MUST_END = "active_worker_must_end"
@@ -695,6 +696,13 @@ def _authority_rejection(
         return _reject(state, DecisionCode.FENCED_WORKER)
     if generation != state.generation or worker.generation != generation:
         return _reject(state, DecisionCode.STALE_GENERATION)
+    timeline = [
+        float(value)
+        for value in (worker.claimed_at, worker.last_heartbeat_at)
+        if value is not None
+    ]
+    if timeline and float(now) < max(timeline):
+        return _reject(state, DecisionCode.CLOCK_ROLLBACK)
     if not lease_is_fresh(state, worker_id, now=now):
         return _reject(state, DecisionCode.LEASE_EXPIRED)
     return None

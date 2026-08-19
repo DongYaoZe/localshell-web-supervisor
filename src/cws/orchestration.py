@@ -11,6 +11,7 @@ from .models import (
     LsmObservation,
     PageCapabilityKind,
     PageCapabilityRecord,
+    ProbeMutationOperation,
     ReconciliationRecord,
     SupervisorState,
     TaskRecord,
@@ -19,6 +20,7 @@ from .models import (
     WorkerWindowBinding,
     WorkspaceObservation,
 )
+from .probe_ops import UNRESOLVED_PROBE_MUTATION_STATES
 from .reconcile import fence_matches
 
 
@@ -59,6 +61,7 @@ class TaskOrchestrationInput:
     previous_reconciliation: ReconciliationRecord | None = None
     current_reconciliation: ReconciliationRecord | None = None
     unresolved_action: ActionAttempt | None = None
+    unresolved_probe_mutation: ProbeMutationOperation | None = None
     worker_lease_expires_at: float | None = None
     last_recovery_at: float | None = None
     last_scheduled_at: float | None = None
@@ -191,6 +194,27 @@ def evaluate_task(
             "task is not in a recovery-eligible state",
             checks=checks,
             retry_after_s=backoff,
+        )
+
+    probe_operation = item.unresolved_probe_mutation
+    probe_state = (
+        getattr(probe_operation.state, "value", probe_operation.state)
+        if probe_operation is not None
+        else None
+    )
+    unresolved_probe_values = {state.value for state in UNRESOLVED_PROBE_MUTATION_STATES}
+    checks["no_unresolved_probe_mutation"] = not (
+        probe_operation is not None and probe_state in unresolved_probe_values
+    )
+    if not checks["no_unresolved_probe_mutation"]:
+        return _decision(
+            item,
+            OrchestrationDecisionKind.BLOCKED_HUMAN,
+            "a global probe-window mutation outcome is unresolved; do not overlap recovery mutation",
+            checks=checks,
+            blockers=[
+                f"unresolved probe mutation {probe_operation.operation_id} is {probe_state}"
+            ],
         )
 
     attempt = item.unresolved_action
@@ -565,8 +589,30 @@ def plan_orchestration(
 
     now = time.time() if now is None else float(now)
     policy = policy or OrchestrationPolicy()
-    decisions = [evaluate_task(item, now=now, policy=policy) for item in items]
-    by_task = {item.task.task_id: item for item in items}
+    unique_items: dict[str, TaskOrchestrationInput] = {}
+    duplicate_ids: set[str] = set()
+    for item in items:
+        task_id = item.task.task_id
+        if task_id in unique_items:
+            duplicate_ids.add(task_id)
+            continue
+        unique_items[task_id] = item
+    canonical_items = [unique_items[task_id] for task_id in sorted(unique_items)]
+    decisions = [evaluate_task(item, now=now, policy=policy) for item in canonical_items]
+    by_task = {item.task.task_id: item for item in canonical_items}
+    decisions = [
+        replace(
+            decision,
+            kind=OrchestrationDecisionKind.RECONCILE,
+            reason="duplicate orchestration inputs exist for one durable task; reconcile caller state",
+            selected=False,
+            blockers=[*decision.blockers, "duplicate durable task input"],
+            mutation_allowed=False,
+        )
+        if decision.task_id in duplicate_ids
+        else decision
+        for decision in decisions
+    ]
     actionable_kinds = {
         OrchestrationDecisionKind.RECONCILE,
         OrchestrationDecisionKind.RECOMMEND_ACTION,

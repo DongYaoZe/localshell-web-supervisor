@@ -921,6 +921,7 @@ class ClockAdversarialModelTests(unittest.TestCase):
                         observed_at=10_000_000.0,
                         new_matches=[exact_new_match(operation)],
                     ),
+                    now=NOW,
                 )
                 if decision.next_state == ProbeMutationState.COMPLETED:
                     pytest.xfail(

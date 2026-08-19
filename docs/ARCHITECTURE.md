@@ -270,7 +270,15 @@ unknown observation; ambiguous states cannot authorize another open/close. The o
 layer evaluates fairness, cooldown, recovery budget, LSM/workspace freshness, semantic fences,
 window leases, and capability provenance but always returns `mutation_allowed=false`. A pure
 multi-conversation worker protocol adds revision/generation fencing for registration, claim,
-heartbeat, handoff, takeover, supersession, abandonment, completion, and task lineage. Its
-persistence adapter and automated ChatGPT conversation creation are future work. Watchdog
-auto-dispatch and live-worker auto-close remain disabled. See `V5_SPEC.md` and
-`WORKER_PROTOCOL.md`.
+heartbeat, handoff, takeover, supersession, abandonment, completion, and task lineage. See
+`V5_SPEC.md` and `WORKER_PROTOCOL.md`.
+
+### 0.8 durable worker-orchestration milestone
+Schema v6 persists the worker protocol in additive task/lease/event tables. Every authority
+transition is revision-CAS protected under `BEGIN IMMEDIATE`; generation ownership survives
+process restart and ambiguous legacy worker combinations fail closed during bootstrap. The
+runtime orchestration adapter refreshes LSM/workspace evidence read-only and carries global
+probe/action fences into the pure planner. Adversarial closure additionally rejects duplicate
+task inputs, future exact-window/probe evidence, future probe observations, and wall-clock
+heartbeat rollback. Automatic ChatGPT conversation creation, watchdog auto-dispatch, and
+live-worker auto-close remain disabled in 0.8. See `V6_SPEC.md`.
