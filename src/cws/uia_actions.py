@@ -399,7 +399,7 @@ def _run_powershell_json(
 class ChromeUiaActionTransport:
     """Gated exact-window ChatGPT sender for an already-ARMED action.
 
-    The transport remains disabled by default. CWS 0.6 exposes only an explicit one-shot
+    The transport remains disabled by default. CWS exposes only an explicit one-shot
     executor that enables it after semantic, action, task-confirmation, and fresh-window fences.
     """
 

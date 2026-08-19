@@ -151,7 +151,7 @@ def run_doctor(
         DoctorCheck(
             "recovery.transport",
             DoctorStatus.PASS,
-            "gated by default; 0.6 execution requires explicit one-shot opt-in, exact task confirmation, and all fences",
+            "gated by default; execution requires explicit one-shot opt-in, exact task confirmation, and all fences",
         )
     )
 
@@ -161,7 +161,7 @@ def run_doctor(
             DoctorCheck(
                 "probe.slot",
                 DoctorStatus.FAIL,
-                f"{len(probe_slots)} durable probe slots exist; 0.6 expects at most one reusable slot",
+                f"{len(probe_slots)} durable probe slots exist; at most one reusable slot is allowed",
             )
         )
     elif not probe_slots:
@@ -177,6 +177,27 @@ def run_doctor(
                     f"slot={slot.slot_id} worker={slot.target_worker_id} fresh={str(fresh).lower()}"
                     if fresh
                     else f"slot={slot.slot_id} is stale; reconcile ownership before any replacement window"
+                ),
+            )
+        )
+
+    unresolved_probe = registry.unresolved_probe_mutation_operation()
+    if unresolved_probe is None:
+        checks.append(
+            DoctorCheck(
+                "probe.mutation",
+                DoctorStatus.PASS,
+                "no unresolved write-ahead probe mutation operation",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "probe.mutation",
+                DoctorStatus.WARN,
+                (
+                    f"operation={unresolved_probe.operation_id} kind={unresolved_probe.kind.value} "
+                    f"state={unresolved_probe.state.value}; reconcile before any new probe mutation"
                 ),
             )
         )

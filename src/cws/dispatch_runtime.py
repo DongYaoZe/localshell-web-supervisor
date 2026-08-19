@@ -66,7 +66,7 @@ def execute_current_worker_recovery(
     if policy.confirmed_task_id != plan.task_id:
         raise DispatchDisabled("explicit task confirmation does not match the dispatch plan")
     if plan.action != DispatchAction.CONTINUE_CURRENT_WORKER:
-        raise ActionBlocked("only current-worker continuation is supported by the 0.6 executor")
+        raise ActionBlocked("only current-worker continuation is supported by the explicit executor")
     if not plan.candidate_ready or not plan.transport_enabled or not plan.would_dispatch:
         raise ActionBlocked("dispatch plan is not execution-ready")
     if not recommendation.prompt or recommendation.action != "reconcile_then_continue":

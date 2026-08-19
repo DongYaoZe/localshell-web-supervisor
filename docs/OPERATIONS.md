@@ -1,6 +1,6 @@
 # Operations runbook
 
-This runbook describes the CWS 0.6 control plane. Observation and planning remain the default; recovery mutation is an explicit one-shot operation and the resident watchdog still does not auto-dispatch or auto-close live pages.
+This runbook describes the CWS 0.7 control plane. Observation and planning remain the default; recovery mutation is an explicit one-shot operation and the resident watchdog still does not auto-dispatch or auto-close live pages.
 
 ## 1. Preflight
 
@@ -29,6 +29,7 @@ python -m cws --db .cws\registry.sqlite3 doctor --task TASK --uia
 - exact-window lease presence/freshness for a named worker;
 - the fact that recovery transport is gated by default and requires explicit one-shot opt-in plus exact task confirmation;
 - durable page-capability record counts/freshness and the at-most-one reusable probe-slot invariant;
+- unresolved schema-v5 probe mutation state, if any, so a crash-fenced operation is reconciled before another mutation;
 - optional task workspace/Git, LSM logical session/plan/in-flight state, worker status, and exact-URL UIA liveness.
 
 A `WARN` does not necessarily mean the supervisor is broken. For example, no resident watchdog lease is expected before `cws watch` is started. `FAIL` means a requested hard invariant such as a named task/workspace or durable-state schema could not be verified.
@@ -113,9 +114,9 @@ python -m cws capability-status --json
 python -m cws pool-plan --page-close-capability latest
 ```
 
-`pool-plan` is advice only. It can mark workers `DO_NOT_CLOSE`, `PARK_CANDIDATE`, or `NO_PAGE`; it never closes a page. The default is fail-closed. The preferred 0.6 path is to validate evidence once with `capability-import`, then explicitly select a context-matching, unexpired generation capability with `--page-close-capability`. Historical experiment provenance must be embedded in the evidence or supplied explicitly at import time; CWS never substitutes the current browser/runtime as the old experiment's provenance. The legacy one-shot `--page-close-evidence` input remains compatible.
+`pool-plan` is advice only. It can mark workers `DO_NOT_CLOSE`, `PARK_CANDIDATE`, or `NO_PAGE`; it never closes a page. The default is fail-closed. The preferred path is to validate evidence once with `capability-import`, then explicitly select a context-matching, unexpired generation capability with `--page-close-capability`. Historical experiment provenance must be embedded in the evidence or supplied explicitly at import time; CWS never substitutes the current browser/runtime as the old experiment's provenance. The legacy one-shot `--page-close-evidence` input remains compatible.
 
-The reusable probe model has at most one durable slot. Same-target observation may reuse it; a different parked target requires exact-close-before-open; stale or ambiguous ownership blocks instead of causing an extra window. The probe-window mutation transport remains disabled by default and is not called by the watchdog in 0.6.
+The reusable probe model has at most one durable slot. Same-target observation may reuse it; a different parked target requires exact-close-before-open; stale or ambiguous ownership blocks instead of causing an extra window. Schema v5 adds a separate write-ahead mutation record for `OPEN`, `ROTATE`, and `CLOSE`: durable authority is recorded before each external phase, and a crash is reconciled against exact old/new CWS-owned window evidence before another phase may proceed. Multiple, changed, or incomplete evidence blocks rather than opening another window. The probe-window mutation transport remains disabled by default and is not called by the watchdog.
 
 A live LSM tool/job/continuation, browser generation, or ambiguous task state still wins over RAM pressure and remains `DO_NOT_CLOSE`. Although one bounded tracked LSM-job close/reopen experiment also passed the stronger tool gate, production live-LSM eviction remains disabled until an eviction dispatcher can atomically bind a specific durable job/session state to a fresh exact-window lease and close operation. If all workers are pinned, CWS reports the pressure rather than choosing a live task to sacrifice.
 
@@ -134,7 +135,7 @@ python -m cws reconciliation-history TASK
 
 `dispatch-plan` remains dry-run. It requires two fresh, distinct, sufficiently separated semantic reconciliation fences plus LSM/browser/workspace safety checks. An unresolved write-ahead action (`ARMED`, `SUBMITTED`, or `RECONCILE_REQUIRED`) feeds back into the planner and forces `candidate_ready=false`.
 
-The write-ahead action protocol writes `ARMED` durably before any external side effect. In 0.6, recovery arming and recovery-budget consumption happen in the same SQLite transaction. Schema v4 retains the unresolved-action invariant and short-lived exact-window leases, and adds durable capability provenance plus the reusable probe-slot record. Ambiguous transport outcomes require reconciliation instead of automatic retry. See `ACTIONS.md` and `V4_SPEC.md`.
+The write-ahead action protocol writes `ARMED` durably before any external side effect. Recovery arming and recovery-budget consumption happen in the same SQLite transaction. Schema v5 preserves the unresolved-action invariant, short-lived exact-window leases, durable capability provenance, and reusable probe-slot record, and adds one globally unresolved probe mutation operation. Ambiguous transport outcomes require reconciliation instead of automatic retry. See `ACTIONS.md`, `V4_SPEC.md`, and `V5_SPEC.md`.
 
 `action-cancel` exists only for an explicit local/operator decision after reconciliation:
 
@@ -175,7 +176,7 @@ Before changing CWS or Local Shell MCP:
 
 The direct LSM file adapter is schema-gated. If LSM changes session/job durable formats, CWS should fail closed until the adapter is explicitly updated and tested.
 
-CWS registry schema v4 is additive over v3. It adds page-capability provenance and the reusable probe-slot record while preserving tasks, workers, observations, reconciliation records, action attempts, watchdog leases, and worker-window leases. Stale bindings/capabilities are never treated as authority. Reconciliation fence semantics remain separately versioned.
+CWS registry schema v5 is additive over v4. It adds `probe_mutation_operations` while preserving tasks, workers, observations, reconciliation records, action attempts, watchdog leases, worker-window leases, page capabilities, and the reusable probe slot. The partial unique index permits at most one unresolved probe mutation across supervisor processes. Stale bindings/capabilities and ambiguous probe observations are never treated as authority. Reconciliation fence semantics remain separately versioned.
 
 ## 9. Data handling
 

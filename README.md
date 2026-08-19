@@ -6,7 +6,7 @@ The central rule is:
 
 > **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.6 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, short-lived exact-window leases, a single reusable probe-slot abstraction, versioned page-continuity capabilities, and an independent resident-watchdog host. Recovery execution exists only as an explicit one-shot gated command; unattended dispatch and automatic live-page closing remain disabled.
+CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.7 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, short-lived exact-window leases, a single reusable probe-slot abstraction with write-ahead OPEN/ROTATE/CLOSE operations, versioned page-continuity capabilities, deterministic advisory orchestration, a generation-fenced replaceable-worker protocol, and an independent resident-watchdog host. Recovery execution exists only as an explicit one-shot gated command; unattended dispatch and automatic live-page closing remain disabled.
 
 ## Why
 
@@ -20,9 +20,9 @@ CWS separates three truth domains:
 
 Completion and recovery decisions are never based on the Send/Stop button alone.
 
-## Current 0.6 control plane
+## Current 0.7 control plane
 
-The 0.6 control plane remains fail-closed and conservative:
+The 0.7 control plane remains fail-closed and conservative:
 
 - SQLite task/worker registry;
 - durable task identity independent of conversation URL;
@@ -36,12 +36,15 @@ The 0.6 control plane remains fail-closed and conservative:
 - system/aggregate Chrome RAM telemetry and conservative active/park/probe planning;
 - mandatory two-sample semantic-fence dispatch planning;
 - durable write-ahead action attempts (`ARMED`, `SUBMITTED`, `RECONCILE_REQUIRED`, `ACKNOWLEDGED`, `FAILED`, `CANCELLED`);
-- SQLite schema v4: database-level uniqueness for unresolved actions, short-lived worker↔window leases, one durable reusable probe slot, and versioned page-continuity capability provenance;
+- SQLite schema v5: all prior action/window/capability invariants plus a single unresolved write-ahead probe mutation operation across `OPEN`, `ROTATE`, and `CLOSE`;
 - an audited `dispatch-plan` command that remains dry-run by default;
 - an explicit one-shot `dispatch-execute` path that requires a candidate-ready two-sample fence, exact task confirmation, a fresh exact-window lease, no unresolved action, available recovery budget, and per-invocation UIA opt-in;
 - `action-reconcile-uia` can release the action lock only from a completed exact single-turn nonce/hash acknowledgement;
 - a reusable probe-slot planner that reuses the same owned slot for the same target, rotates only by exact-close-before-open for another target, and blocks on stale or ambiguous ownership rather than opening another window;
+- crash-fenced probe mutation reconciliation that persists authority before close/open, adopts only one exact proven CWS-owned replacement after a crash, and blocks on multiple/changed/unknown window evidence;
 - durable page-continuity capabilities bound to evaluator version, site, browser family/major, platform, observation surface, experiment time, and expiry; capability use remains explicit;
+- deterministic multi-task orchestration policy for observe/reconcile/recommend/wait/human decisions with fairness, cooldown, recovery-budget, LSM/workspace, exact-window, and capability gates; it never grants mutation authority;
+- a pure revision/generation-fenced worker-lease protocol for registration, heartbeat, handoff, takeover, supersession, abandonment, completion, and parent/child task lineage; persistence/browser creation remain future adapters;
 - deterministic health classifier;
 - low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
 - independent detached watchdog start/status plus cooperative lease-based stop, without relying on LSM process-tree kill semantics;
@@ -126,7 +129,7 @@ V1 browser/network/reconcile details are in [`docs/V1_SPEC.md`](docs/V1_SPEC.md)
 The V2 low-memory planner/page-pool layer is documented in
 [`docs/V2_SPEC.md`](docs/V2_SPEC.md). `cws ram-status` reports system/aggregate Chrome
 memory, while `cws pool-plan` produces `DO_NOT_CLOSE` / `PARK_CANDIDATE` advice. The default
-remains fail-closed: `close_allowed` is not enabled by the release version alone. In 0.6 the
+remains fail-closed: `close_allowed` is not enabled by the release version alone. The
 preferred path is to import validated local evidence into a versioned durable capability and
 then explicitly select that capability with `--page-close-capability`; the one-shot
 `--page-close-evidence FILE` path remains for compatibility. The planner itself never closes
@@ -135,14 +138,16 @@ pages, and live LSM work remains `DO_NOT_CLOSE`.
 V3's private-transport NO-GO decision and deterministic dry-run dispatcher are documented
 in [`docs/V3_DECISION.md`](docs/V3_DECISION.md) and [`docs/V3_SPEC.md`](docs/V3_SPEC.md).
 The 0.6 reusable probe-slot, durable capability, and explicit recovery-execution contracts
-are documented in [`docs/V4_SPEC.md`](docs/V4_SPEC.md).
+are documented in [`docs/V4_SPEC.md`](docs/V4_SPEC.md). The 0.7 crash-fenced probe mutation,
+advisory orchestration, and replaceable-worker protocol boundary is documented in
+[`docs/V5_SPEC.md`](docs/V5_SPEC.md).
 
 For day-to-day use, see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). `cws doctor` is a
 read-only preflight for registry/LSM schema, RAM, watchdog lease/PID state, unresolved action fences, workspace/task state, and optional exact-URL UIA. It never repairs or changes browser/task state. The write-ahead action protocol is documented in [`docs/ACTIONS.md`](docs/ACTIONS.md), and isolated browser experiments in [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 
 ## Safety boundary
 
-CWS never treats `continue` as idempotent. Before recovery execution, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. CWS does not migrate browser sign-in state, bypass access controls, or reconstruct private ChatGPT endpoints. The 0.6 executor is deliberately one-shot and explicitly enabled; the resident watchdog still does not auto-send. Page eviction is likewise advisory only for live work.
+CWS never treats `continue` as idempotent. Before recovery execution, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. CWS does not migrate browser sign-in state, bypass access controls, or reconstruct private ChatGPT endpoints. The executor is deliberately one-shot and explicitly enabled; the resident watchdog still does not auto-send. Page eviction is likewise advisory only for live work.
 
 Browser telemetry is also data-minimized: UIA does not read the unsent prompt draft;
 `probe-uia` returns state/signature diagnostics rather than conversation text; persisted
@@ -157,3 +162,4 @@ UIA/LSM snapshot raw metadata is reduced to the numeric/state fields needed by t
 - **0.4:** durable write-ahead action/crash fencing, strict page-close evidence evaluation, schema-v2 registry, and independent detached watchdog hosting.
 - **0.5:** authenticated same-profile disposable-window experiments proved generation continuity, one tracked LSM-job continuity across page close/reopen, and the real write-ahead crash window. Exact top-level window identity and the gated UIA sender/ACK module were established.
 - **0.6:** schema-v4 durable capability provenance, at-most-one reusable probe-slot state, nonce-bound recovery prompts, atomic recovery-budget arming, explicit fenced `dispatch-execute`, and positive `action-reconcile-uia` acknowledgement. Default `dispatch-plan` stays dry-run; watchdog auto-dispatch and live-worker auto-close remain disabled.
+- **0.7:** schema-v5 write-ahead probe `OPEN`/`ROTATE`/`CLOSE` operations and deterministic crash reconciliation, advisory fair recovery orchestration, a pure generation-fenced replaceable-worker protocol, transactional page-pool updates, and duplicate-free attention scheduling. Browser mutation remains explicit; watchdog auto-dispatch and live-worker auto-close remain disabled.

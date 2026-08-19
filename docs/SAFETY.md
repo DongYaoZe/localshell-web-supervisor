@@ -65,8 +65,9 @@ Hard fences:
 Any external worker mutation must be recorded durably as `ARMED` **before** the transport is
 called. `ARMED`, `SUBMITTED`, and `RECONCILE_REQUIRED` all block another attempt for the same
 task. Registry schema v2 introduced that partial unique index, so it also holds across racing
-supervisor processes. Schema v3 added short-lived exact-window leases; schema v4 adds durable
-capability provenance and the reusable probe-slot record. For recovery execution, ARMED state
+supervisor processes. Schema v3 added short-lived exact-window leases; schema v4 added durable
+capability provenance and the reusable probe-slot record. Schema v5 adds a separate globally
+unique unresolved probe-mutation fence for `OPEN`, `ROTATE`, and `CLOSE`. For recovery execution, ARMED state
 and recovery-budget consumption are committed atomically before submission. An expired
 window lease blocks the gated UIA transport before draft input and must be refreshed by observation.
 
@@ -75,10 +76,16 @@ A transport exception is treated as an ambiguous side-effect window and becomes
 effect occurred may produce terminal `FAILED`. A positive acknowledgement must be tied to
 the same attempt and worker before the duplicate-send lock is released as `ACKNOWLEDGED`.
 
-CWS 0.6 exposes only an explicit one-shot current-worker executor. It requires exact task
+CWS exposes only an explicit one-shot current-worker executor. It requires exact task
 confirmation plus all semantic/LSM/workspace/window/action fences. The resident watchdog
 does not call it automatically. `action-reconcile-uia` can acknowledge only from positive
 single-turn completion evidence; no CLI fabricates acknowledgement.
+
+Probe-window mutation has the same write-ahead principle but a separate state machine. A
+durable operation must authorize the exact close/open phase before the transport is called.
+After a crash, only one exact CWS-owned target may be adopted. Old+new present, multiple
+matches, changed HWND/PID/executable identity, or incomplete observation stays fenced in
+`RECONCILE_REQUIRED`. An uncertain submitted phase is never blindly replayed.
 
 ## Process and machine safety
 
@@ -90,7 +97,9 @@ single-turn completion evidence; no CLI fabricates acknowledgement.
 - Strong authenticated evidence now proves close/reopen continuity for pure model generation and one harmless Local Shell MCP job in an exact-bound disposable window. This does not prove arbitrary side-effecting tools are idempotent.
 - Production pool policy still pins live LSM work, active generation, and ambiguous recovery states as `DO_NOT_CLOSE`; capability evidence does not authorize automatic eviction.
 - Page-continuity capabilities are versioned, context-bound, expiring, and only used when explicitly selected.
-- The durable probe model permits at most one reusable slot; stale or ambiguous ownership blocks replacement rather than opening another window.
+- The durable probe model permits at most one reusable slot and at most one unresolved mutation operation; stale or ambiguous ownership blocks replacement rather than opening another window.
+- The 0.7 orchestration layer is advisory: even a selected `recommend-action` decision has `mutation_allowed=false` and cannot bypass the explicit executor.
+- The 0.7 worker-lease protocol uses revision/generation fencing so a superseded or stale conversation cannot regain authority with a late heartbeat; its persistence/browser-creation adapters are intentionally not automated yet.
 - Anonymous/localhost experiments cannot satisfy the page-close safety gate.
 - Never bulk-close ambiguous unmarked user windows.
 

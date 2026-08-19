@@ -138,7 +138,7 @@ even if two supervisor processes race. Transport exceptions or ambiguous outcome
 URL, top-level HWND, Chrome PID/executable, observation time, and expiry. HWND is not durable
 identity: leases expire quickly and are cleared when a worker is superseded/parked/dead. The
 UIA sender/ACK observer requires a fresh binding and revalidates the same identity immediately
-before mutation. In 0.6 it is reachable only through the explicit one-shot fenced executor;
+before mutation. It is reachable only through the explicit one-shot fenced executor;
 the resident watchdog still cannot auto-enable it, and no CLI shortcut can fabricate
 acknowledgement. See `ACTIONS.md` and `V4_SPEC.md`.
 
@@ -167,12 +167,15 @@ running-at-close, completed-after-close, and final-response evidence. See `EXPER
 
 The implemented V2 control layer makes that uncertainty explicit. `pool-plan` pins any
 worker with live/ambiguous task or LSM evidence and ranks only terminal/queued/blocked workers
-as parking candidates. In 0.6, non-live `close_allowed` advice still requires explicit local
+as parking candidates. Non-live `close_allowed` advice still requires explicit local
 capability selection (or the legacy one-shot evidence input); live LSM and active generation
 remain unconditionally pinned. Page closing is not performed. `PagePool` separately tracks
-ephemeral active/probe page leases, while schema v4 adds one durable reusable probe-slot
-record. Same-target probes reuse that slot; different targets require exact-close-before-open;
-stale or ambiguous ownership blocks rather than causing page proliferation. Durable
+ephemeral active/probe page leases, while schema v4 added one durable reusable probe-slot
+record. Schema v5 adds one globally unresolved write-ahead probe mutation operation for
+`OPEN`, `ROTATE`, and `CLOSE`. Same-target probes reuse the slot; different targets require
+exact-close-before-open; a crash after a submitted phase is reconciled before further
+authority is issued; stale, multiple, changed, or incomplete ownership evidence blocks rather
+than causing page proliferation. Durable
 worker/task identity remains in SQLite, never in the browser page ID.
 
 System and aggregate Chrome working-set telemetry provide pressure evidence, but Chrome's
@@ -231,10 +234,10 @@ deployment-scoped capabilities. The V2 planner still does not close live workers
 
 ### V3
 Evidence-based NO-GO on private ChatGPT endpoint reimplementation. V3 instead added a
-mandatory two-sample semantic fence and deterministic dry-run dispatcher. Normal 0.6
+mandatory two-sample semantic fence and deterministic dry-run dispatcher. Normal
 `dispatch-plan` behavior still has `transport_enabled=false` / `would_dispatch=false`.
 A separate explicit one-shot executor may enable the exact-window UIA module only after
-all V3 semantic fences plus 0.6 action/window/task-confirmation/budget checks pass. The
+all V3 semantic fences plus action/window/task-confirmation/budget checks pass. The
 resident watchdog does not call it automatically. Takeover remains blocked until a
 separately bound replacement worker and LSM-supported takeover transition can be proven
 safely in isolation. See `V3_DECISION.md`, `V3_SPEC.md`, and `V4_SPEC.md`.
@@ -258,3 +261,16 @@ is an explicit one-shot current-worker continuation behind exact task confirmati
 existing semantic/LSM/workspace/window/action fences; `action-reconcile-uia` releases the lock
 only from positive single-turn completion evidence. Normal planning remains dry-run, the
 resident watchdog does not auto-dispatch, and live-worker page eviction remains disabled.
+
+### 0.7 crash-fenced probe and worker-orchestration milestone
+Schema v5 adds write-ahead probe-window operations and a database-level one-unresolved-
+mutation invariant. Pure reconciliation distinguishes exact absence, unique owned target,
+old target still present, old+new present, multiple matches, stale/changed identity, and
+unknown observation; ambiguous states cannot authorize another open/close. The orchestration
+layer evaluates fairness, cooldown, recovery budget, LSM/workspace freshness, semantic fences,
+window leases, and capability provenance but always returns `mutation_allowed=false`. A pure
+multi-conversation worker protocol adds revision/generation fencing for registration, claim,
+heartbeat, handoff, takeover, supersession, abandonment, completion, and task lineage. Its
+persistence adapter and automated ChatGPT conversation creation are future work. Watchdog
+auto-dispatch and live-worker auto-close remain disabled. See `V5_SPEC.md` and
+`WORKER_PROTOCOL.md`.

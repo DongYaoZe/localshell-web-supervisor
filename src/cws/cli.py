@@ -57,7 +57,7 @@ def default_db_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.6 control plane)")
+    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.7 control plane)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=None, help="registry sqlite path (default: .cws/registry.sqlite3)")
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
@@ -213,7 +213,7 @@ def build_parser() -> argparse.ArgumentParser:
     pool_capability.add_argument(
         "--page-close-evidence",
         help=(
-            "legacy one-shot PageCloseEvidence JSON; prefer a durable capability id in 0.6"
+            "legacy one-shot PageCloseEvidence JSON; prefer a durable capability id"
         ),
     )
     pool_capability.add_argument(

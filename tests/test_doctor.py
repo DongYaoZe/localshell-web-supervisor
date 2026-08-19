@@ -1,9 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cws.doctor import DoctorStatus, run_doctor
+from cws.models import ProbeMutationKind, ProbeMutationState
 from cws.ram import BrowserMemoryObservation, SystemMemoryObservation
 from cws.registry import Registry
 
@@ -52,6 +54,8 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(checks["watchdog.lease"].status, DoctorStatus.WARN)
                 self.assertEqual(checks["recovery.transport"].status, DoctorStatus.PASS)
                 self.assertIn("gated", checks["recovery.transport"].detail)
+                self.assertEqual(checks["probe.mutation"].status, DoctorStatus.PASS)
+                self.assertIn("no unresolved", checks["probe.mutation"].detail)
             finally:
                 registry.close()
 
@@ -68,6 +72,32 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(report.overall, DoctorStatus.FAIL)
                 task_check = next(check for check in report.checks if check.name == "task")
                 self.assertEqual(task_check.status, DoctorStatus.FAIL)
+            finally:
+                registry.close()
+
+    def test_unresolved_probe_mutation_is_visible_as_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Registry(Path(td) / "registry.sqlite3")
+            operation = SimpleNamespace(
+                operation_id="probe-op-1",
+                kind=ProbeMutationKind.ROTATE,
+                state=ProbeMutationState.RECONCILE_REQUIRED,
+            )
+            try:
+                with (
+                    patch("cws.doctor.detect_lsm_state_dir", return_value=None),
+                    patch("cws.doctor.observe_system_memory", return_value=system_memory()),
+                    patch("cws.doctor.observe_windows_process_group", return_value=chrome_memory()),
+                    patch.object(
+                        registry,
+                        "unresolved_probe_mutation_operation",
+                        return_value=operation,
+                    ),
+                ):
+                    report = run_doctor(registry)
+                checks = {check.name: check for check in report.checks}
+                self.assertEqual(checks["probe.mutation"].status, DoctorStatus.WARN)
+                self.assertIn("RECONCILE_REQUIRED", checks["probe.mutation"].detail)
             finally:
                 registry.close()
 

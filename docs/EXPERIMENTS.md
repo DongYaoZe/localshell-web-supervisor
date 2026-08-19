@@ -88,7 +88,7 @@ tool_execution_parking_safe=true
 
 when run against that D-round evidence, including `--require-tool`.
 
-CWS 0.6 still keeps live LSM work `DO_NOT_CLOSE` in the normal `pool-plan` policy. The evidence is now representable as versioned, expiring capability provenance, but an automatic live-worker eviction path still does not exist.
+CWS still keeps live LSM work `DO_NOT_CLOSE` in the normal `pool-plan` policy. The evidence is representable as versioned, expiring capability provenance, but an automatic live-worker eviction path still does not exist.
 
 ## Action acknowledgement and crash-fence evidence
 

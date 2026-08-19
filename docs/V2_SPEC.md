@@ -20,7 +20,7 @@ Default planning targets:
 
 ### `DO_NOT_CLOSE`
 
-0.6 still pins a worker when any strong/ambiguous live condition exists:
+The current control plane still pins a worker when any strong/ambiguous live condition exists:
 
 - LSM in-flight tool call;
 - tracked active job;
@@ -28,7 +28,7 @@ Default planning targets:
 - browser reports active generation;
 - task state `STARTING`, `RUNNING`, `RECOVERING`, `RECONCILING`, `SUSPECT`, or `NEEDS_HUMAN`.
 
-This remains true even though isolated experiments prove that generation and one real Local Shell tool chain can survive page closure. Automatic live-worker closing is a separate policy decision and is **not enabled** in 0.6.
+This remains true even though isolated experiments prove that generation and one real Local Shell tool chain can survive page closure. Automatic live-worker closing is a separate policy decision and is **not enabled**.
 
 ### `PARK_CANDIDATE`
 
@@ -39,7 +39,7 @@ Terminal/idle states with no live evidence are ranked:
 3. `QUEUED`;
 4. `BLOCKED`.
 
-The release does not hard-code page-close capability globally. `pool-plan` defaults to `page_close_experiment_passed=false`. In 0.6, validated evidence can be imported into a versioned, expiring, context-bound capability and then explicitly selected with `--page-close-capability`; the legacy `--page-close-evidence FILE` path remains compatible. Only already non-live candidates can become `close_allowed=true`. The planner itself still does not close pages.
+The release does not hard-code page-close capability globally. `pool-plan` defaults to `page_close_experiment_passed=false`. Validated evidence can be imported into a versioned, expiring, context-bound capability and then explicitly selected with `--page-close-capability`; the legacy `--page-close-evidence FILE` path remains compatible. Only already non-live candidates can become `close_allowed=true`. The planner itself still does not close pages.
 
 ### `NO_PAGE`
 
@@ -56,7 +56,7 @@ Roles:
 - `ACTIVE`: page assigned to an executing/interactive worker;
 - `PROBE`: small reusable page pool for sequentially revisiting parked URLs.
 
-The pool fails closed on capacity instead of implicitly evicting a page. Schema v4 additionally records at most one reusable durable probe slot: same-target observation reuses it; another parked target requires exact-close-before-open; stale or ambiguous ownership blocks rather than opening another window. The actual probe-window mutation transport remains disabled by default in 0.6. A probe policy may block visual-only image/media/font resources, while documents, scripts, stylesheets, XHR/fetch, and WebSocket remain available for state detection.
+The pool fails closed on capacity instead of implicitly evicting a page. Schema v4 additionally records at most one reusable durable probe slot: same-target observation reuses it; another parked target requires exact-close-before-open; stale or ambiguous ownership blocks rather than opening another window. Schema v5 adds write-ahead probe mutation fencing, but the actual probe-window mutation transport remains disabled by default. A probe policy may block visual-only image/media/font resources, while documents, scripts, stylesheets, XHR/fetch, and WebSocket remain available for state detection.
 
 ## Empirical page-close findings
 
@@ -85,7 +85,7 @@ Run the evidence gate with:
 python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
 ```
 
-The preferred 0.6 path validates/imports evidence once and then explicitly selects the durable capability:
+The preferred path validates/imports evidence once and then explicitly selects the durable capability:
 
 ```powershell
 python -m cws capability-import --file .cws\page-close-evidence.json --json

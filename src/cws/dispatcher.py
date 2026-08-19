@@ -67,7 +67,7 @@ def build_dispatch_plan(
 ) -> DispatchPlan:
     """Evaluate a recovery action without executing it.
 
-    CWS 0.6 keeps this planner transport-neutral. Normal `dispatch-plan` calls set
+    CWS keeps this planner transport-neutral. Normal `dispatch-plan` calls set
     `transport_enabled=false`; the separate explicit executor may set it true only after its
     own opt-in/task-confirmation checks. This planner prevents any transport from bypassing
     reconciliation and fence checks by accident.
@@ -286,7 +286,7 @@ def _action_from_recommendation(recommendation: RecoveryRecommendation) -> Dispa
 
 
 def execute_dispatch(_plan: DispatchPlan) -> None:
-    """Legacy generic executor remains disabled; 0.6 uses the fenced dispatch_runtime path."""
+    """Legacy generic executor remains disabled; use the fenced dispatch_runtime path."""
     raise DispatchDisabled(
-        "generic recovery dispatch is disabled; use dispatch-plan or the explicit fenced 0.6 executor"
+        "generic recovery dispatch is disabled; use dispatch-plan or the explicit fenced executor"
     )

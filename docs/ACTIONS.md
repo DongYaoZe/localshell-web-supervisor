@@ -1,6 +1,6 @@
 # Action adapter and crash fencing
 
-CWS 0.6 keeps the exact-window Windows UI Automation transport gated by default. It is now wired only to an explicit one-shot `dispatch-execute` command; the resident watchdog still does not auto-dispatch.
+CWS keeps the exact-window Windows UI Automation transport gated by default. It is wired only to an explicit one-shot `dispatch-execute` command; the resident watchdog still does not auto-dispatch.
 
 The design goal remains unchanged: a supervisor crash must never turn an uncertain previous send into an automatic duplicate send.
 
@@ -43,7 +43,7 @@ This is a database invariant, not only a Python check.
 
 `ChromeUiaActionTransport` remains disabled by default. There is still no generic `cws send` or `cws continue` command and no watchdog auto-dispatch. The only operational entry is `dispatch-execute`, which enables the adapter for one invocation after explicit task confirmation and all deterministic recovery fences pass.
 
-The preferred construction path is a fresh `WorkerWindowBinding` recorded by exact-URL UIA observation. Registry schema v4 retains the short-lived lease containing:
+The preferred construction path is a fresh `WorkerWindowBinding` recorded by exact-URL UIA observation. Current registry migrations retain the schema-v3 short-lived lease containing:
 
 - worker id;
 - native HWND;
@@ -123,12 +123,13 @@ python -m cws action-cancel ATTEMPT --reason "human reconciliation completed"
 - schema v2: `action_attempts` plus the one-unresolved-action unique index;
 - schema v3: short-lived `worker_window_bindings` for exact-window mutation fencing;
 - schema v4: durable page-capability provenance and the reusable probe-slot record; recovery execution also uses atomic ARMED+budget persistence.
+- schema v5: durable write-ahead probe-window mutation operations with one globally unresolved operation fence. This is separate from recovery-message `ActionAttempt` fencing.
 
 Migrations are additive. Unknown future registry schema versions fail closed.
 
 ## Explicit execution, still no unattended dispatch
 
-0.6 wires the policy layer for a one-shot current-worker continuation. `dispatch-execute` requires:
+The policy layer exposes only a one-shot current-worker continuation. `dispatch-execute` requires:
 
 - fresh, stable two-sample semantic reconciliation fences;
 - exact `--confirm-task` match and explicit UIA enable flag;
@@ -139,4 +140,4 @@ Migrations are additive. Unknown future registry schema versions fail closed.
 - canonical recovery prompt;
 - the gated transport.
 
-The ARMED row and recovery-budget increment are committed atomically before submission. Positive post-action acknowledgement remains a separate observation step. The resident watchdog does not invoke the executor automatically in 0.6.
+The ARMED row and recovery-budget increment are committed atomically before submission. Positive post-action acknowledgement remains a separate observation step. The resident watchdog does not invoke the executor automatically.
