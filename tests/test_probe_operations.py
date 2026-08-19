@@ -79,7 +79,7 @@ class ProbeMutationRegistryTests(unittest.TestCase):
             ttl_s=1000.0,
         )
 
-    def test_v4_migrates_additively_to_v5_and_preserves_probe_slot(self):
+    def test_v4_migrates_additively_to_current_and_preserves_probe_slot(self):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "legacy-v4.sqlite3"
             conn = sqlite3.connect(db)
@@ -144,9 +144,9 @@ class ProbeMutationRegistryTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(SCHEMA_VERSION, 5)
+                self.assertEqual(SCHEMA_VERSION, 6)
                 self.assertEqual(
-                    registry._conn.execute("PRAGMA user_version").fetchone()[0], 5
+                    registry._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION
                 )
                 self.assertIsNotNone(
                     registry._conn.execute(

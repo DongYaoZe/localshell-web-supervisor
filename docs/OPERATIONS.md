@@ -176,7 +176,7 @@ Before changing CWS or Local Shell MCP:
 
 The direct LSM file adapter is schema-gated. If LSM changes session/job durable formats, CWS should fail closed until the adapter is explicitly updated and tested.
 
-CWS registry schema v5 is additive over v4. It adds `probe_mutation_operations` while preserving tasks, workers, observations, reconciliation records, action attempts, watchdog leases, worker-window leases, page capabilities, and the reusable probe slot. The partial unique index permits at most one unresolved probe mutation across supervisor processes. Stale bindings/capabilities and ambiguous probe observations are never treated as authority. Reconciliation fence semantics remain separately versioned.
+CWS registry schema v6 is additive over v5. It preserves all v5 task/worker, observation, action, watchdog, capability, worker-window, probe-slot, and probe-mutation rows/indexes, then adds durable worker-protocol task state, per-worker lease metadata, and append-only protocol events keyed to the existing task/worker identities. Protocol writes use a revision compare-and-swap under `BEGIN IMMEDIATE`; ambiguous legacy worker combinations fail closed instead of inventing fresh authority. The v5 global unresolved-probe and per-task unresolved-action uniqueness fences remain unchanged.
 
 ## 9. Data handling
 

@@ -3,9 +3,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
-SCHEMA = r"""
+# Kept as a named baseline so migration tests can construct a real schema-v5 database.
+SCHEMA_V5 = r"""
 PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
@@ -180,6 +181,59 @@ CREATE TABLE IF NOT EXISTS page_capabilities (
 CREATE INDEX IF NOT EXISTS idx_page_capabilities_kind_expires
     ON page_capabilities(kind, expires_at DESC);
 """
+
+SCHEMA_V6 = r"""
+CREATE TABLE IF NOT EXISTS worker_protocol_tasks (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    task_status TEXT NOT NULL,
+    current_worker_id TEXT REFERENCES workers(worker_id) ON DELETE RESTRICT,
+    handoff_target_worker_id TEXT REFERENCES workers(worker_id) ON DELETE RESTRICT,
+    handoff_requested_at REAL,
+    parent_task_id TEXT REFERENCES tasks(task_id) ON DELETE RESTRICT,
+    root_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE RESTRICT,
+    child_key TEXT,
+    completed_at REAL,
+    completion_ref TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_parent
+    ON worker_protocol_tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_root
+    ON worker_protocol_tasks(root_task_id);
+CREATE TABLE IF NOT EXISTS worker_protocol_leases (
+    worker_id TEXT PRIMARY KEY REFERENCES workers(worker_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    conversation_ref TEXT NOT NULL,
+    status TEXT NOT NULL,
+    registered_at REAL NOT NULL,
+    generation INTEGER,
+    claimed_at REAL,
+    last_heartbeat_at REAL,
+    lease_expires_at REAL,
+    ended_at REAL,
+    superseded_by TEXT REFERENCES workers(worker_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_leases_task
+    ON worker_protocol_leases(task_id);
+CREATE TABLE IF NOT EXISTS worker_protocol_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    event_index INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    at REAL NOT NULL,
+    worker_id TEXT,
+    generation INTEGER,
+    related_worker_id TEXT,
+    ref TEXT,
+    UNIQUE(task_id, revision, event_index)
+);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_events_task_revision
+    ON worker_protocol_events(task_id, revision, event_index);
+"""
+
+SCHEMA = SCHEMA_V5 + SCHEMA_V6
 
 
 def connect(path: str | Path) -> sqlite3.Connection:

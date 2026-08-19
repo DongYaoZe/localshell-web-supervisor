@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .actions import ActionAcknowledgement, ActionAttempt, ActionAttemptState, UNRESOLVED_ACTION_STATES
+from . import worker_persistence, worker_protocol as worker_protocol_model
 from .db import connect
 from .models import (
     BrowserObservation,
@@ -43,6 +44,220 @@ class Registry:
 
     def close(self) -> None:
         self._conn.close()
+
+    def bootstrap_worker_protocol(
+        self,
+        task_id: str,
+        *,
+        parent_task_id: str | None = None,
+        root_task_id: str | None = None,
+        child_key: str | None = None,
+    ) -> worker_protocol_model.WorkerTaskState:
+        return worker_persistence.bootstrap_worker_protocol(
+            self._conn,
+            task_id,
+            parent_task_id=parent_task_id,
+            root_task_id=root_task_id,
+            child_key=child_key,
+        )
+
+    def load_worker_protocol(self, task_id: str) -> worker_protocol_model.WorkerTaskState:
+        return worker_persistence.load_worker_protocol(self._conn, task_id)
+
+    def worker_protocol_events(
+        self, task_id: str, *, limit: int = 200
+    ) -> tuple[worker_protocol_model.ProtocolEvent, ...]:
+        return worker_persistence.worker_protocol_events(self._conn, task_id, limit=limit)
+
+    def protocol_register_worker(
+        self,
+        task_id: str,
+        conversation_url: str,
+        *,
+        expected_revision: int,
+        worker_id: str | None = None,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        conversation_url = str(conversation_url).strip()
+        if not conversation_url:
+            raise ValueError("conversation_url must be non-empty")
+        worker_id = worker_id or f"worker_{uuid.uuid4().hex[:12]}"
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.register_worker(
+                state,
+                worker_id,
+                conversation_ref=conversation_url,
+                now=now,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def protocol_claim_worker(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        expected_revision: int,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.claim_worker(
+                state,
+                worker_id,
+                now=now,
+                lease_seconds=lease_seconds,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def protocol_heartbeat_worker(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        generation: int,
+        expected_revision: int,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.heartbeat_worker(
+                state,
+                worker_id,
+                generation=generation,
+                now=now,
+                lease_seconds=lease_seconds,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def protocol_request_handoff(
+        self,
+        task_id: str,
+        worker_id: str,
+        target_worker_id: str,
+        *,
+        generation: int,
+        expected_revision: int,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.request_handoff(
+                state,
+                worker_id,
+                target_worker_id,
+                generation=generation,
+                now=now,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def protocol_takeover_worker(
+        self,
+        task_id: str,
+        candidate_worker_id: str,
+        *,
+        expected_revision: int,
+        lease_seconds: float,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.takeover_worker(
+                state,
+                candidate_worker_id,
+                now=now,
+                lease_seconds=lease_seconds,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def protocol_complete_worker(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        generation: int,
+        expected_revision: int,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.complete_worker(
+                state,
+                worker_id,
+                generation=generation,
+                now=now,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def protocol_abandon_worker(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        generation: int,
+        expected_revision: int,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.abandon_worker(
+                state,
+                worker_id,
+                generation=generation,
+                now=now,
+                expected_revision=expected_revision,
+            ),
+        )
+
+    def protocol_complete_task(
+        self,
+        task_id: str,
+        *,
+        completion_ref: str,
+        expected_revision: int,
+        now: float | None = None,
+    ) -> worker_protocol_model.ProtocolDecision:
+        now = time.time() if now is None else float(now)
+        return worker_persistence.apply_worker_protocol_transition(
+            self._conn,
+            task_id,
+            expected_revision=expected_revision,
+            transition=lambda state: worker_protocol_model.complete_task(
+                state,
+                completion_ref=completion_ref,
+                now=now,
+                expected_revision=expected_revision,
+            ),
+        )
 
     def register_task(
         self,
@@ -109,6 +324,17 @@ class Registry:
         return [self.get_task(row["task_id"]) for row in rows]
 
     def update_state(self, task_id: str, state: SupervisorState) -> None:
+        if worker_persistence.protocol_state_exists(self._conn, task_id):
+            protocol = self.load_worker_protocol(task_id)
+            if protocol.task_status == worker_protocol_model.DurableTaskStatus.COMPLETED:
+                if state != SupervisorState.COMPLETED:
+                    raise RuntimeError(
+                        "completed worker protocol task cannot be reopened by legacy update_state"
+                    )
+            elif state in {SupervisorState.COMPLETED, SupervisorState.ABANDONED}:
+                raise RuntimeError(
+                    "use worker-protocol task semantics for a protocol-initialized durable task"
+                )
         self._conn.execute(
             "UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?",
             (state.value, time.time(), task_id),
@@ -583,6 +809,10 @@ class Registry:
         make_current: bool = True,
     ) -> WorkerRecord:
         self.get_task(task_id)
+        if worker_persistence.protocol_state_exists(self._conn, task_id):
+            raise RuntimeError(
+                "use protocol_register_worker for a protocol-initialized durable task"
+            )
         now = time.time()
         worker_id = f"worker_{uuid.uuid4().hex[:12]}"
         self._conn.execute(
@@ -641,7 +871,11 @@ class Registry:
 
     def set_worker_status(self, worker_id: str, status: WorkerStatus) -> WorkerRecord:
         """Update durable worker bookkeeping only; does not open/close a browser page."""
-        self.get_worker(worker_id)
+        worker = self.get_worker(worker_id)
+        if worker_persistence.protocol_state_exists(self._conn, worker.task_id):
+            raise RuntimeError(
+                "use worker-protocol transitions for a protocol-initialized durable task"
+            )
         ended_at = time.time() if status in {WorkerStatus.SUPERSEDED, WorkerStatus.DEAD} else None
         self._conn.execute(
             "UPDATE workers SET status = ?, ended_at = ? WHERE worker_id = ?",
