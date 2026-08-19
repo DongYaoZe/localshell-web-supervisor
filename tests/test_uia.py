@@ -1,7 +1,7 @@
 import unittest
 
-from cws.models import BrowserObservation, WorkerRecord, WorkerStatus
-from cws.uia import (
+from lws.models import BrowserObservation, WorkerRecord, WorkerStatus
+from lws.uia import (
     UiaProbeUnavailable,
     _POWERSHELL_PROBE,
     conversation_id_from_url,
@@ -18,10 +18,10 @@ class UiaNormalizationTests(unittest.TestCase):
         )
 
     def test_conversation_id(self):
-        url = "https://chatgpt.com/g/project/c/6a847d07-556c-83e8-8ed6-060b27f3b35c"
+        url = "https://chatgpt.com/g/project/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         self.assertEqual(
             conversation_id_from_url(url),
-            "6a847d07-556c-83e8-8ed6-060b27f3b35c",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         )
 
     def test_payload_detects_generation_and_delivery_error(self):
@@ -35,8 +35,8 @@ class UiaNormalizationTests(unittest.TestCase):
             ],
             "browser_pid": 123,
             "window_handle": 456,
-            "window_title": "ChatGPT - Google Chrome",
-            "selected_tab_label": "ChatGPT - High memory usage - 1.2 GB",
+            "window_title": "web chat - Google Chrome",
+            "selected_tab_label": "web chat - High memory usage - 1.2 GB",
             "tool_status_labels": ["Inspecting project files"],
         }
         payload = payload_from_uia_result(result)

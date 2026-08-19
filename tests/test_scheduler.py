@@ -1,7 +1,7 @@
 import unittest
 
-from cws.models import Assessment, SupervisorState, TaskRecord
-from cws.scheduler import attention_queue
+from lws.models import Assessment, SupervisorState, TaskRecord
+from lws.scheduler import attention_queue
 
 
 def task(task_id: str) -> TaskRecord:

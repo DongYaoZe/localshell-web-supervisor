@@ -4,10 +4,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cws.doctor import DoctorStatus, run_doctor
-from cws.models import ProbeMutationKind, ProbeMutationState
-from cws.ram import BrowserMemoryObservation, SystemMemoryObservation
-from cws.registry import Registry
+from lws.doctor import DoctorStatus, run_doctor
+from lws.models import ProbeMutationKind, ProbeMutationState
+from lws.ram import BrowserMemoryObservation, SystemMemoryObservation
+from lws.registry import Registry
 
 
 NOW = 1000.0
@@ -41,10 +41,10 @@ class DoctorTests(unittest.TestCase):
             registry = Registry(Path(td) / "registry.sqlite3")
             try:
                 with (
-                    patch("cws.doctor.detect_lsm_state_dir", return_value=None),
-                    patch("cws.doctor.observe_system_memory", return_value=system_memory()),
-                    patch("cws.doctor.observe_windows_process_group", return_value=chrome_memory()),
-                    patch("cws.doctor.importlib.util.find_spec", return_value=None),
+                    patch("lws.doctor.detect_lsm_state_dir", return_value=None),
+                    patch("lws.doctor.observe_system_memory", return_value=system_memory()),
+                    patch("lws.doctor.observe_windows_process_group", return_value=chrome_memory()),
+                    patch("lws.doctor.importlib.util.find_spec", return_value=None),
                 ):
                     report = run_doctor(registry)
                 self.assertEqual(report.overall, DoctorStatus.WARN)
@@ -64,9 +64,9 @@ class DoctorTests(unittest.TestCase):
             registry = Registry(Path(td) / "registry.sqlite3")
             try:
                 with (
-                    patch("cws.doctor.detect_lsm_state_dir", return_value=None),
-                    patch("cws.doctor.observe_system_memory", return_value=system_memory()),
-                    patch("cws.doctor.observe_windows_process_group", return_value=chrome_memory()),
+                    patch("lws.doctor.detect_lsm_state_dir", return_value=None),
+                    patch("lws.doctor.observe_system_memory", return_value=system_memory()),
+                    patch("lws.doctor.observe_windows_process_group", return_value=chrome_memory()),
                 ):
                     report = run_doctor(registry, task_id="missing")
                 self.assertEqual(report.overall, DoctorStatus.FAIL)
@@ -85,9 +85,9 @@ class DoctorTests(unittest.TestCase):
             )
             try:
                 with (
-                    patch("cws.doctor.detect_lsm_state_dir", return_value=None),
-                    patch("cws.doctor.observe_system_memory", return_value=system_memory()),
-                    patch("cws.doctor.observe_windows_process_group", return_value=chrome_memory()),
+                    patch("lws.doctor.detect_lsm_state_dir", return_value=None),
+                    patch("lws.doctor.observe_system_memory", return_value=system_memory()),
+                    patch("lws.doctor.observe_windows_process_group", return_value=chrome_memory()),
                     patch.object(
                         registry,
                         "unresolved_probe_mutation_operation",
@@ -112,13 +112,13 @@ class DoctorTests(unittest.TestCase):
                     project="p",
                     objective="obj",
                     cwd=str(work),
-                    conversation_url="https://chatgpt.com/c/fixture",
+                    conversation_url="https://web.example/c/fixture",
                 )
                 with (
-                    patch("cws.doctor.detect_lsm_state_dir", return_value=None),
-                    patch("cws.doctor.observe_system_memory", return_value=system_memory()),
-                    patch("cws.doctor.observe_windows_process_group", return_value=chrome_memory()),
-                    patch("cws.doctor.ChromeUiaProbe.observe") as observe,
+                    patch("lws.doctor.detect_lsm_state_dir", return_value=None),
+                    patch("lws.doctor.observe_system_memory", return_value=system_memory()),
+                    patch("lws.doctor.observe_windows_process_group", return_value=chrome_memory()),
+                    patch("lws.doctor.ChromeUiaProbe.observe") as observe,
                 ):
                     report = run_doctor(registry, task_id="t1", probe_uia=False)
                 observe.assert_not_called()
@@ -140,7 +140,7 @@ class DoctorTests(unittest.TestCase):
                     project="p",
                     objective="obj",
                     cwd=str(work),
-                    conversation_url="https://chatgpt.com/c/fixture",
+                    conversation_url="https://web.example/c/fixture",
                 )
                 worker = registry.get_worker(task.current_worker_id)
                 registry.bind_worker_window(
@@ -153,10 +153,10 @@ class DoctorTests(unittest.TestCase):
                     ttl_s=10.0,
                 )
                 with (
-                    patch("cws.doctor.detect_lsm_state_dir", return_value=None),
-                    patch("cws.doctor.observe_system_memory", return_value=system_memory()),
-                    patch("cws.doctor.observe_windows_process_group", return_value=chrome_memory()),
-                    patch("cws.doctor.time.time", return_value=NOW),
+                    patch("lws.doctor.detect_lsm_state_dir", return_value=None),
+                    patch("lws.doctor.observe_system_memory", return_value=system_memory()),
+                    patch("lws.doctor.observe_windows_process_group", return_value=chrome_memory()),
+                    patch("lws.doctor.time.time", return_value=NOW),
                 ):
                     report = run_doctor(registry, task_id="t1", probe_uia=False)
                 checks = {check.name: check for check in report.checks}

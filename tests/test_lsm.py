@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cws.lsm import FileLsmTelemetry
+from lws.lsm import FileLsmTelemetry
 
 
 class LsmTelemetryTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class LsmTelemetryTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch("cws.lsm.time.time", return_value=10_000):
+            with patch("lws.lsm.time.time", return_value=10_000):
                 obs = FileLsmTelemetry(root).observe(
                     task_id="t1", session_id="s1", tracked_job_ids=["j1", "j2"]
                 )
@@ -105,7 +105,7 @@ class LsmTelemetryTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch("cws.lsm.time.time", return_value=10_000):
+            with patch("lws.lsm.time.time", return_value=10_000):
                 obs = FileLsmTelemetry(root).observe(
                     task_id="t1", session_id="s1", tracked_job_ids=["j1"]
                 )

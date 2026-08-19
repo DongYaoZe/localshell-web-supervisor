@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.db import SCHEMA_VERSION
-from cws.models import WorkerStatus
-from cws.page_runtime import tagged_probe_url
-from cws.registry import Registry
+from lws.db import SCHEMA_VERSION
+from lws.models import WorkerStatus
+from lws.page_runtime import tagged_probe_url
+from lws.registry import Registry
 
 URL = "https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 

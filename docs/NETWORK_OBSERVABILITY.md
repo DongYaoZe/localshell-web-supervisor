@@ -1,16 +1,16 @@
 # Network observability
 
-CWS treats network activity as one independent liveness signal. It is not an execution transport and it is not a private ChatGPT API client.
+LWS treats network activity as one independent liveness signal. It is not an execution transport and it is not a private web chat API client.
 
 ## Two browser ownership modes
 
 ### User-owned normal Chrome
 
-The current user Chrome is not restarted or modified to expose DevTools. On the bootstrap machine it did not publish a CDP TCP endpoint. CWS observes that browser through the read-only Windows UI Automation backend instead.
+The current user Chrome is not restarted or modified to expose DevTools. On the bootstrap machine it did not publish a CDP TCP endpoint. LWS observes that browser through the read-only Windows UI Automation backend instead.
 
-### CWS-owned Playwright browser
+### LWS-owned Playwright browser
 
-When CWS owns the Playwright browser/context/page, it can create an in-process CDP session with `context.new_cdp_session(page)`. This works with Playwright's normal pipe transport and does not require a `--remote-debugging-port` listener.
+When LWS owns the Playwright browser/context/page, it can create an in-process CDP session with `context.new_cdp_session(page)`. This works with Playwright's normal pipe transport and does not require a `--remote-debugging-port` listener.
 
 `sample_cdp_session()` records only the Network-domain metadata needed for liveness analysis:
 
@@ -39,14 +39,14 @@ The CLI accepts `--allow-remote`, but remote CDP remains an explicit opt-in; loo
 
 ### External TCP port is not assumed for the user-owned browser
 
-The user's normal authenticated Chrome did not expose a debugging endpoint, and CWS did
-not restart or modify it to create one. A fresh isolated ChatGPT Chromium was unauthenticated
+The user's normal authenticated Chrome did not expose a debugging endpoint, and LWS did
+not restart or modify it to create one. A fresh isolated web chat Chromium was unauthenticated
 and Cloudflare-gated and was closed without bypass attempts or credential transfer.
-Therefore CWS does not make external TCP CDP exposure a prerequisite for V1/V2.
+Therefore LWS does not make external TCP CDP exposure a prerequisite for V1/V2.
 
 ### Owned Playwright/CDP sample succeeded
 
-A temporary CWS-owned headless Chromium loaded a localhost-only fixture that issued a fetch roughly every 120 ms. CWS sampled it through a loopback CDP endpoint for 1.2 seconds.
+A temporary LWS-owned headless Chromium loaded a localhost-only fixture that issued a fetch roughly every 120 ms. LWS sampled it through a loopback CDP endpoint for 1.2 seconds.
 
 Observed in that run:
 
@@ -63,11 +63,11 @@ The temporary browser/server were owned by the experiment and cleaned up afterwa
 
 ## Interpretation rule
 
-A bounded sample with positive recent network activity is **conflict evidence**, not proof that the model is progressing: ChatGPT may have unrelated background traffic. If DOM/LSM look stale but network activity is recent, CWS enters `RECONCILING` rather than racing the worker.
+A bounded sample with positive recent network activity is **conflict evidence**, not proof that the model is progressing: web chat may have unrelated background traffic. If DOM/LSM look stale but network activity is recent, LWS enters `RECONCILING` rather than racing the worker.
 
-A bounded sample with zero events is **not** proof of a stall. CWS carries a conservative
+A bounded sample with zero events is **not** proof of a stall. LWS carries a conservative
 `quiet_since_at` lower bound across observations. DOM + network + durable LSM silence
 together can raise stall confidence, while network activity alone never upgrades a task
 to `RUNNING`.
 
-Reliable network-silence classification requires a resident/continuous heartbeat owned by CWS, with explicit observation coverage timestamps. That is a V2 browser-pool responsibility rather than something inferred from one short sample.
+Reliable network-silence classification requires a resident/continuous heartbeat owned by LWS, with explicit observation coverage timestamps. That is a V2 browser-pool responsibility rather than something inferred from one short sample.

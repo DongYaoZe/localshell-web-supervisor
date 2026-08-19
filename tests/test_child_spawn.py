@@ -4,31 +4,31 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cws.child_spawn import (
+from lws.child_spawn import (
     ChildSpawnBlocked,
     ChildSpawnExecution,
     ChromeUiaChildSpawnTransport,
     arm_child_spawn,
-    chatgpt_conversation_project_id,
-    chatgpt_project_id,
+    web_conversation_project_id,
+    web_project_id,
     execute_child_spawn_open,
     execute_child_spawn_prompt,
     owned_project_root_matches,
     reconcile_child_spawn,
     tagged_project_url,
 )
-from cws.db import SCHEMA_V5, SCHEMA_V6, SCHEMA_V7
-from cws.models import ChildSpawnAttemptState, WorkspaceObservation
-from cws.registry import Registry
+from lws.db import SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8
+from lws.models import ChildSpawnAttemptState, WorkspaceObservation
+from lws.registry import Registry
 
 
-PROJECT_ID = "6a847cfd8b70819186c3c5cc148d3937"
+PROJECT_ID = "0123456789abcdef0123456789abcdef"
 PROJECT = f"https://chatgpt.com/g/g-p-{PROJECT_ID}"
-PROJECT_SLUG = f"https://chatgpt.com/g/g-p-{PROJECT_ID}-chatgpt-web-supervisor/project"
-CONVERSATION = f"https://chatgpt.com/g/g-p-{PROJECT_ID}/c/6a847d07-556c-83e8-8ed6-060b27f3b35c"
+PROJECT_SLUG = f"https://chatgpt.com/g/g-p-{PROJECT_ID}-localshell-web-supervisor/project"
+CONVERSATION = f"https://chatgpt.com/g/g-p-{PROJECT_ID}/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 OTHER_CONVERSATION = (
     "https://chatgpt.com/g/g-p-11111111111111111111111111111111/"
-    "c/6a847d07-556c-83e8-8ed6-060b27f3b35c"
+    "c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 )
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
@@ -101,7 +101,7 @@ class ChildSpawnTests(unittest.TestCase):
         self.registry = Registry(self.db)
         self.registry.register_task(
             task_id="parent",
-            project="cws",
+            project="lws",
             objective="parent",
             cwd="D:/repo",
         )
@@ -109,11 +109,11 @@ class ChildSpawnTests(unittest.TestCase):
             "parent",
             child_key="A",
             child_task_id="child",
-            project="cws",
+            project="lws",
             objective="child",
             cwd="D:/repo-wt",
             prompt_text="Use Local Shell MCP goal mode. Implement A; test; commit.",
-            chatgpt_project_url=PROJECT_SLUG,
+            web_project_url=PROJECT_SLUG,
             now=1,
         )
 
@@ -140,34 +140,34 @@ class ChildSpawnTests(unittest.TestCase):
         )
 
     def test_project_identity_tolerates_slug_canonicalization(self):
-        self.assertEqual(chatgpt_project_id(PROJECT), PROJECT_ID)
-        self.assertEqual(chatgpt_project_id(PROJECT_SLUG), PROJECT_ID)
-        self.assertEqual(chatgpt_conversation_project_id(CONVERSATION), PROJECT_ID)
-        self.assertIn("#cws-child=spawn_test:owner123", tagged_project_url(PROJECT, "spawn_test:owner123"))
+        self.assertEqual(web_project_id(PROJECT), PROJECT_ID)
+        self.assertEqual(web_project_id(PROJECT_SLUG), PROJECT_ID)
+        self.assertEqual(web_conversation_project_id(CONVERSATION), PROJECT_ID)
+        self.assertIn("#lws-child=spawn_test:owner123", tagged_project_url(PROJECT, "spawn_test:owner123"))
         with self.assertRaises(ValueError):
-            chatgpt_project_id(CONVERSATION)
+            web_project_id(CONVERSATION)
         with self.assertRaises(ValueError):
-            chatgpt_project_id("https://example.com/g/g-p-" + PROJECT_ID)
+            web_project_id("https://example.com/g/g-p-" + PROJECT_ID)
 
     def test_owned_project_root_accepts_only_same_project_and_owner_after_canonicalization(self):
         attempt = self.arm()
         canonical = (
             PROJECT_SLUG
-            + "#cws-child="
+            + "#lws-child="
             + attempt.owner_token
         )
         self.assertTrue(owned_project_root_matches(canonical, attempt))
-        self.assertFalse(owned_project_root_matches(PROJECT_SLUG + "#cws-child=other-owner", attempt))
+        self.assertFalse(owned_project_root_matches(PROJECT_SLUG + "#lws-child=other-owner", attempt))
         self.assertFalse(
             owned_project_root_matches(
-                "https://chatgpt.com/g/g-p-11111111111111111111111111111111/project#cws-child="
+                "https://chatgpt.com/g/g-p-11111111111111111111111111111111/project#lws-child="
                 + attempt.owner_token,
                 attempt,
             )
         )
 
-    @patch("cws.child_spawn.os.name", "nt")
-    @patch("cws.child_spawn._run_powershell_json")
+    @patch("lws.child_spawn.os.name", "nt")
+    @patch("lws.child_spawn._run_powershell_json")
     def test_real_sender_uses_canonical_current_url_as_literal_exact_fence(self, run_ps):
         attempt = self.arm()
         bound = self.registry.update_child_spawn_attempt(
@@ -187,9 +187,9 @@ class ChildSpawnTests(unittest.TestCase):
             state=ChildSpawnAttemptState.PROMPT_SUBMITTED,
             now=13,
         )
-        canonical = PROJECT_SLUG + "#cws-child=" + submitted.owner_token
+        canonical = PROJECT_SLUG + "#lws-child=" + submitted.owner_token
         transport = __import__(
-            "cws.child_spawn", fromlist=["ChromeUiaChildSpawnTransport"]
+            "lws.child_spawn", fromlist=["ChromeUiaChildSpawnTransport"]
         ).ChromeUiaChildSpawnTransport(chrome_executable=CHROME, enabled=True)
         with patch.object(
             transport,
@@ -205,7 +205,7 @@ class ChildSpawnTests(unittest.TestCase):
             }
             result = transport.send_authorized(submitted, "hello")
         self.assertTrue(result.submitted)
-        self.assertEqual(run_ps.call_args.kwargs["env"]["CWS_EXPECTED_URL"], canonical)
+        self.assertEqual(run_ps.call_args.kwargs["env"]["LWS_EXPECTED_URL"], canonical)
 
     def test_initial_child_spawn_open_send_adopts_exact_same_project_conversation(self):
         attempt = self.arm()
@@ -321,7 +321,7 @@ class ChildSpawnTests(unittest.TestCase):
         self.assertEqual(unresolved.state, ChildSpawnAttemptState.RECONCILE_REQUIRED)
         self.assertIsNone(self.registry.load_worker_protocol("child").current_worker_id)
 
-    def test_wait_tolerates_transient_chatgpt_routes_but_accepts_only_same_project_conversation(self):
+    def test_wait_tolerates_transient_web_routes_but_accepts_only_same_project_conversation(self):
         attempt = self.arm()
         transport = ChromeUiaChildSpawnTransport(
             chrome_executable=CHROME,
@@ -349,7 +349,7 @@ class ChildSpawnTests(unittest.TestCase):
         )
         with patch.object(
             transport, "_observe_bound_url", side_effect=[transient, project_root, final]
-        ), patch("cws.child_spawn.time.sleep", return_value=None):
+        ), patch("lws.child_spawn.time.sleep", return_value=None):
             observed = transport.wait_for_conversation(attempt)
         self.assertTrue(observed.changed)
         self.assertEqual(observed.url, CONVERSATION)
@@ -373,12 +373,12 @@ class ChildSpawnTests(unittest.TestCase):
         raw.execute(
             """INSERT INTO tasks
                (task_id, project, objective, cwd, state, checkpoint_json, created_at, updated_at)
-               VALUES ('p','cws','parent','.', 'QUEUED','{}',1,1)"""
+               VALUES ('p','lws','parent','.', 'QUEUED','{}',1,1)"""
         )
         raw.execute(
             """INSERT INTO tasks
                (task_id, project, objective, cwd, state, checkpoint_json, created_at, updated_at)
-               VALUES ('c','cws','child','.', 'QUEUED','{}',1,1)"""
+               VALUES ('c','lws','child','.', 'QUEUED','{}',1,1)"""
         )
         raw.execute(
             """INSERT INTO child_dispatches
@@ -390,17 +390,50 @@ class ChildSpawnTests(unittest.TestCase):
         raw.close()
         migrated = Registry(db)
         try:
-            self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], 8)
+            self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], 9)
             columns = {
                 row["name"] for row in migrated._conn.execute("PRAGMA table_info(child_dispatches)")
             }
-            self.assertIn("chatgpt_project_url", columns)
-            self.assertIsNone(migrated.get_child_dispatch("c").chatgpt_project_url)
+            self.assertIn("web_project_url", columns)
+            self.assertIsNone(migrated.get_child_dispatch("c").web_project_url)
             self.assertIsNotNone(
                 migrated._conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='child_spawn_attempts'"
                 ).fetchone()
             )
+        finally:
+            migrated.close()
+
+    def test_schema_v8_legacy_project_column_is_copied_to_provider_neutral_column(self):
+        db = Path(self.tmp.name) / "legacy-v8.sqlite3"
+        raw = sqlite3.connect(db)
+        raw.execute("PRAGMA foreign_keys = ON")
+        raw.executescript(SCHEMA_V5 + SCHEMA_V6 + SCHEMA_V7 + SCHEMA_V8)
+        raw.execute("ALTER TABLE child_dispatches ADD COLUMN chatgpt_project_url TEXT")
+        raw.execute("PRAGMA user_version = 8")
+        raw.execute(
+            """INSERT INTO tasks
+               (task_id, project, objective, cwd, state, checkpoint_json, created_at, updated_at)
+               VALUES ('p8','lws','parent','.', 'QUEUED','{}',1,1)"""
+        )
+        raw.execute(
+            """INSERT INTO tasks
+               (task_id, project, objective, cwd, state, checkpoint_json, created_at, updated_at)
+               VALUES ('c8','lws','child','.', 'QUEUED','{}',1,1)"""
+        )
+        raw.execute(
+            """INSERT INTO child_dispatches
+               (dispatch_id,parent_task_id,child_task_id,child_key,prompt_text,prompt_sha256,
+                expected_branch,base_ref,created_at,updated_at,payload_json,chatgpt_project_url)
+               VALUES ('d8','p8','c8','A','x','sha',NULL,NULL,1,1,'{}',?)""",
+            (PROJECT,),
+        )
+        raw.commit()
+        raw.close()
+        migrated = Registry(db)
+        try:
+            self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(migrated.get_child_dispatch("c8").web_project_url, PROJECT)
         finally:
             migrated.close()
 

@@ -1,6 +1,6 @@
 import unittest
 
-from cws.browser import (
+from lws.browser import (
     dom_payload_from_lsm_snapshot,
     observation_from_dom_payload,
     observation_from_lsm_snapshot,
@@ -11,11 +11,11 @@ class BrowserObservationTests(unittest.TestCase):
     def test_same_tail_preserves_last_dom_change(self):
         first = observation_from_dom_payload(
             "w1",
-            {"observed_at": 100.0, "url": "https://chatgpt.com/c/x", "text_tail": "hello"},
+            {"observed_at": 100.0, "url": "https://web.example/c/x", "text_tail": "hello"},
         )
         second = observation_from_dom_payload(
             "w1",
-            {"observed_at": 150.0, "url": "https://chatgpt.com/c/x", "text_tail": "hello"},
+            {"observed_at": 150.0, "url": "https://web.example/c/x", "text_tail": "hello"},
             previous=first,
         )
         self.assertEqual(first.last_dom_change_at, 100.0)
@@ -36,7 +36,7 @@ class BrowserObservationTests(unittest.TestCase):
 
     def test_lsm_snapshot_infers_error_and_send_button(self):
         snapshot = {
-            "url": "https://chatgpt.com/c/x",
+            "url": "https://web.example/c/x",
             "text": "Answer\nMessage delivery timed out. Please try again.",
             "text_truncated": False,
             "interactive_elements": [
@@ -53,7 +53,7 @@ class BrowserObservationTests(unittest.TestCase):
 
     def test_stop_button_is_positive_generation_evidence(self):
         snapshot = {
-            "url": "https://chatgpt.com/c/x",
+            "url": "https://web.example/c/x",
             "text": "working",
             "text_truncated": False,
             "interactive_elements": [
@@ -66,7 +66,7 @@ class BrowserObservationTests(unittest.TestCase):
 
     def test_truncated_lsm_body_prefix_is_not_a_message_signature(self):
         snapshot = {
-            "url": "https://chatgpt.com/c/x",
+            "url": "https://web.example/c/x",
             "text": "first 50000 chars never change after conversation grows",
             "text_truncated": True,
             "interactive_elements": [],

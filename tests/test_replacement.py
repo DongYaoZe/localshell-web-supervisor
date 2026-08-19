@@ -2,20 +2,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.actions import ActionAttempt, ActionAttemptState
-from cws.models import LsmObservation, ReplacementAttemptState, WorkspaceObservation
-from cws.registry import Registry
-from cws.replacement import (
+from lws.actions import ActionAttempt, ActionAttemptState
+from lws.models import LsmObservation, ReplacementAttemptState, WorkspaceObservation
+from lws.registry import Registry
+from lws.replacement import (
     ReplacementBlocked,
     arm_replacement,
     complete_replacement,
     submit_replacement,
 )
-from cws.worker_protocol import WorkerLeaseStatus, worker_by_id
+from lws.worker_protocol import WorkerLeaseStatus, worker_by_id
 
 
-OLD_URL = "https://chatgpt.com/g/project/c/old-worker"
-NEW_URL = "https://chatgpt.com/g/project/c/new-worker"
+OLD_URL = "https://web.example/g/project/c/old-worker"
+NEW_URL = "https://web.example/g/project/c/new-worker"
 
 
 class ReplacementWorkflowTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class ReplacementWorkflowTests(unittest.TestCase):
         self.registry = Registry(Path(self.tmp.name) / "registry.sqlite3")
         self.registry.register_task(
             task_id="parent",
-            project="cws",
+            project="lws",
             objective="parent",
             cwd="D:/repo",
         )
@@ -32,7 +32,7 @@ class ReplacementWorkflowTests(unittest.TestCase):
             "parent",
             child_key="A",
             child_task_id="child",
-            project="cws",
+            project="lws",
             objective="child work",
             cwd="D:/repo-wt",
             prompt_text="Do child work; test; commit.",
@@ -195,7 +195,7 @@ class ReplacementWorkflowTests(unittest.TestCase):
             "parent",
             child_key="B",
             child_task_id="expired",
-            project="cws",
+            project="lws",
             objective="expired child",
             cwd="D:/expired",
             prompt_text="Continue expired child.",

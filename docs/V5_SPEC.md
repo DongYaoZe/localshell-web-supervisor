@@ -1,8 +1,8 @@
-# V5 / CWS 0.7 specification
+# V5 / LWS 0.7 specification
 
-CWS 0.7 extends the 0.6 control plane with crash-fenced probe-window mutation operations, deterministic advisory recovery orchestration, and a pure replaceable-conversation worker lease protocol.
+LWS 0.7 extends the 0.6 control plane with crash-fenced probe-window mutation operations, deterministic advisory recovery orchestration, and a pure replaceable-conversation worker lease protocol.
 
-The release remains conservative: it does not enable unattended ChatGPT sends, automatic live-worker page eviction, automatic ChatGPT conversation creation, copied authentication, or private ChatGPT endpoints.
+The release remains conservative: it does not enable unattended web chat sends, automatic live-worker page eviction, automatic web chat conversation creation, copied authentication, or private web chat endpoints.
 
 ## 1. Registry schema v5
 
@@ -12,7 +12,7 @@ It adds `probe_mutation_operations`. Each operation records bounded control meta
 
 - operation id and nonce;
 - operation kind and durable state;
-- target task, worker, conversation URL, slot id, and CWS ownership token;
+- target task, worker, conversation URL, slot id, and LWS ownership token;
 - expected actual URL and Chrome executable;
 - sanitized snapshot of the prior probe slot when applicable;
 - timestamps, bounded reconciliation counters/outcomes, and resume state;
@@ -50,7 +50,7 @@ One bounded read-only observation classifies the real browser state against the 
 - `STALE_OR_CHANGED_IDENTITY`
 - `UNKNOWN_OBSERVATION`
 
-Identity checks bind the evidence to the expected CWS ownership target and the relevant URL/HWND/PID/Chrome executable facts. Incomplete observations or changed/multiple identities fail closed.
+Identity checks bind the evidence to the expected LWS ownership target and the relevant URL/HWND/PID/Chrome executable facts. Incomplete observations or changed/multiple identities fail closed.
 
 Important transitions:
 
@@ -95,7 +95,7 @@ Even a selected `recommend-action` decision has `mutation_allowed=false`. The or
 
 ## 6. Replaceable worker lease protocol
 
-`worker_protocol.py` models multiple ChatGPT conversations as replaceable leases for one durable task without binding task identity to a browser tab.
+`worker_protocol.py` models multiple web chat conversations as replaceable leases for one durable task without binding task identity to a browser tab.
 
 The pure protocol includes:
 
@@ -109,7 +109,7 @@ The pure protocol includes:
 
 A late heartbeat from a superseded generation cannot regain authority. Racing callers must use the expected revision; stale revisions are rejected.
 
-The 0.7 release intentionally does **not** persist this protocol into a new registry schema and does not create ChatGPT conversations automatically. `WORKER_PROTOCOL.md` describes the adapter fields/events a later milestone can persist atomically.
+The 0.7 release intentionally does **not** persist this protocol into a new registry schema and does not create web chat conversations automatically. `WORKER_PROTOCOL.md` describes the adapter fields/events a later milestone can persist atomically.
 
 ## 7. Action execution remains separate
 
@@ -121,14 +121,14 @@ The resident watchdog never supplies those opt-ins automatically.
 
 ## 8. Default-disabled boundaries
 
-CWS 0.7 still does not enable:
+LWS 0.7 still does not enable:
 
-- unattended ChatGPT send/retry/takeover;
+- unattended web chat send/retry/takeover;
 - automatic live-worker page closing;
 - automatic probe-window mutation from the watchdog;
-- automatic creation of replacement ChatGPT conversations;
+- automatic creation of replacement web chat conversations;
 - copied browser authentication or credential migration;
-- private ChatGPT transport reconstruction.
+- private web chat transport reconstruction.
 
 Ambiguity resolves to reconciliation, blocking, or human attention rather than optimistic retry.
 

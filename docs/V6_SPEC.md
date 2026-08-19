@@ -1,6 +1,6 @@
-# V6 / CWS 0.8 specification
+# V6 / LWS 0.8 specification
 
-CWS 0.8 makes replaceable-conversation worker authority durable and closes the main adversarial gaps discovered during the 0.8 parallel supervision wave. The release remains fail-closed: it does not enable resident auto-dispatch, automatic creation of replacement ChatGPT conversations, automatic live-page eviction, copied authentication, or private ChatGPT endpoints.
+LWS 0.8 makes replaceable-conversation worker authority durable and closes the main adversarial gaps discovered during the 0.8 parallel supervision wave. The release remains fail-closed: it does not enable resident auto-dispatch, automatic creation of replacement web chat conversations, automatic live-page eviction, copied authentication, or private web chat endpoints.
 
 ## 1. Registry schema v6
 
@@ -16,7 +16,7 @@ Migration from v5 creates these structures without rewriting existing v5 rows. U
 
 ## 2. Durable worker authority
 
-The worker protocol models a ChatGPT conversation as a replaceable lease for a durable task. Registration, claim, heartbeat, handoff, takeover, worker completion/abandonment, and durable task completion are persisted through a revision compare-and-swap transaction under `BEGIN IMMEDIATE`.
+The worker protocol models a web chat conversation as a replaceable lease for a durable task. Registration, claim, heartbeat, handoff, takeover, worker completion/abandonment, and durable task completion are persisted through a revision compare-and-swap transaction under `BEGIN IMMEDIATE`.
 
 A transition is accepted only against the expected durable revision. A takeover increments generation and supersedes the prior worker. A stale generation cannot heartbeat, complete, request handoff, or reclaim authority after restart. Durable task completion remains explicit and irreversible.
 
@@ -35,7 +35,7 @@ Legacy task/worker rows can be bootstrapped into the protocol only when their st
 - optional page-continuity capability provenance;
 - explicit scheduler history.
 
-Missing, stale, future-dated, contradictory, or unavailable evidence becomes a reconcile/human blocker. The adapter does not send ChatGPT messages, open/close browser windows, or manufacture missing durable history.
+Missing, stale, future-dated, contradictory, or unavailable evidence becomes a reconcile/human blocker. The adapter does not send web chat messages, open/close browser windows, or manufacture missing durable history.
 
 ## 4. Operational probe reconciliation
 

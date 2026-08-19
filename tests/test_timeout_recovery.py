@@ -3,11 +3,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cws.actions import ActionAcknowledgement, build_action_attempt, evidence_digest
-from cws.dispatcher import DispatchAction, DispatchPlan
-from cws.models import BrowserObservation, SupervisorState
-from cws.registry import Registry
-from cws.timeout_recovery import (
+from lws.actions import ActionAcknowledgement, build_action_attempt, evidence_digest
+from lws.dispatcher import DispatchAction, DispatchPlan
+from lws.models import BrowserObservation, SupervisorState
+from lws.registry import Registry
+from lws.timeout_recovery import (
     TimeoutRecoveryPolicy,
     gate_timeout_dispatch_plan,
     is_recoverable_delivery_error,
@@ -23,11 +23,11 @@ class TimeoutRecoveryTests(unittest.TestCase):
         self.registry = Registry(Path(self.tmp.name) / "registry.sqlite3")
         self.task = self.registry.register_task(
             task_id="timeout-task",
-            project="cws",
+            project="lws",
             objective="recover delivery timeout",
             cwd="C:/repo",
             lsm_session_id="s1",
-            conversation_url="https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            conversation_url="https://web.example/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         )
         self.worker = self.registry.get_worker(self.task.current_worker_id)
 
@@ -290,7 +290,7 @@ class TimeoutRecoveryTests(unittest.TestCase):
             )
             self.registry.record_browser_observation(latest)
 
-        with patch("cws.timeout_recovery.OBSERVATION_RETENTION_PER_ENTITY", 5):
+        with patch("lws.timeout_recovery.OBSERVATION_RETENTION_PER_ENTITY", 5):
             blocked = gate_timeout_dispatch_plan(
                 self.registry,
                 self.plan(),

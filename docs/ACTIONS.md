@@ -1,12 +1,12 @@
 # Action adapter and crash fencing
 
-CWS keeps the exact-window Windows UI Automation transport gated by default. It is wired to the explicit one-shot `dispatch-execute` command and, in CWS 0.9, to one separately opted-in resident path for recognized delivery-timeout recovery. The default watchdog remains advisory.
+LWS keeps the exact-window Windows UI Automation transport gated by default. It is wired to the explicit one-shot `dispatch-execute` command and, in LWS 0.9, to one separately opted-in resident path for recognized delivery-timeout recovery. The default watchdog remains advisory.
 
 The design goal remains unchanged: a supervisor crash must never turn an uncertain previous send into an automatic duplicate send.
 
 ## Write-ahead rule
 
-Before any external browser mutation, CWS persists an `ActionAttempt` in state `ARMED`.
+Before any external browser mutation, LWS persists an `ActionAttempt` in state `ARMED`.
 
 The durable record contains control metadata only:
 
@@ -41,7 +41,7 @@ This is a database invariant, not only a Python check.
 
 ## Exact-window UIA transport
 
-`ChromeUiaActionTransport` remains disabled by default. There is still no generic `cws send` or `cws continue` command. `dispatch-execute` enables the adapter for one explicitly confirmed invocation. CWS 0.9 may also enable the same adapter from `watch --auto-recover-timeouts` / `watchdog-start --auto-recover-timeouts`, but only after a recognized delivery error and the same deterministic recovery fences pass.
+`ChromeUiaActionTransport` remains disabled by default. There is still no generic `lws send` or `lws continue` command. `dispatch-execute` enables the adapter for one explicitly confirmed invocation. LWS 0.9 may also enable the same adapter from `watch --auto-recover-timeouts` / `watchdog-start --auto-recover-timeouts`, but only after a recognized delivery error and the same deterministic recovery fences pass.
 
 The preferred construction path is a fresh `WorkerWindowBinding` recorded by exact-URL UIA observation. Current registry migrations retain the schema-v3 short-lived lease containing:
 
@@ -65,9 +65,9 @@ The PowerShell helper requires:
 7. `prompt-textarea`;
 8. no pre-existing ready draft.
 
-The canonical recovery prompt is rendered with one non-secret `CWS-ACTION-<nonce>` idempotency marker before hashing/submission. The original recovery text is not persisted. The wire text is passed to the child process outside the command line and is reconstructed only from the canonical prompt plus the durable nonce.
+The canonical recovery prompt is rendered with one non-secret `LWS-ACTION-<nonce>` idempotency marker before hashing/submission. The original recovery text is not persisted. The wire text is passed to the child process outside the command line and is reconstructed only from the canonical prompt plus the durable nonce.
 
-After `ValuePattern.SetValue(prompt)`, ChatGPT may update its application-level composer state asynchronously. A real isolated smoke showed the Send control can appear later than 300 ms. The adapter therefore polls for at most 2 seconds, every 50 ms, revalidating the exact URL and requiring a positive enabled/on-screen `composer-submit-button`. If readiness never appears, the outcome is side-effect-ambiguous and requires reconciliation.
+After `ValuePattern.SetValue(prompt)`, web chat may update its application-level composer state asynchronously. A real isolated smoke showed the Send control can appear later than 300 ms. The adapter therefore polls for at most 2 seconds, every 50 ms, revalidating the exact URL and requiring a positive enabled/on-screen `composer-submit-button`. If readiness never appears, the outcome is side-effect-ambiguous and requires reconciliation.
 
 Only after that positive proof does the transport invoke Send.
 
@@ -100,20 +100,20 @@ It does not return conversation text or transport payload content.
 
 Accessibility trees may expose the same visible turn multiple times, so nonce occurrences are a **bounded duplicate fence**, not an exact count of user turns. Stable signatures across independent observations are stronger than one instantaneous sample.
 
-`action-reconcile-uia ATTEMPT` invokes this observer and marks the attempt acknowledged only when the known marker is observed exactly once and generation is complete. There is still no CLI that fabricates `ack=true`. In 0.9, after a positive ACK, CWS also records the comparable normal-browser message signature in existing action metadata; an unchanged acknowledged UI state cannot retrigger resident timeout recovery.
+`action-reconcile-uia ATTEMPT` invokes this observer and marks the attempt acknowledged only when the known marker is observed exactly once and generation is complete. There is still no CLI that fabricates `ack=true`. In 0.9, after a positive ACK, LWS also records the comparable normal-browser message signature in existing action metadata; an unchanged acknowledged UI state cannot retrigger resident timeout recovery.
 
 ## Planner feedback
 
 An unresolved action feeds back into `dispatch-plan`. Even if two reconciliation fences would otherwise make `candidate_ready=true`, the planner forces the action closed until the unresolved attempt is acknowledged, cancelled after reconciliation, or otherwise resolved.
 
-`cws doctor --task TASK` reports unresolved action attempts and exact-window lease state.
+`lws doctor --task TASK` reports unresolved action attempts and exact-window lease state.
 
 ## Operational inspection
 
 ```powershell
-python -m cws action-status TASK
-python -m cws action-reconcile-uia ATTEMPT
-python -m cws action-cancel ATTEMPT --reason "human reconciliation completed"
+python -m lws action-status TASK
+python -m lws action-reconcile-uia ATTEMPT
+python -m lws action-cancel ATTEMPT --reason "human reconciliation completed"
 ```
 
 `action-status` is read-only. `action-reconcile-uia` can only acknowledge from positive exact-window evidence. `action-cancel` affects only the local duplicate-send lock.

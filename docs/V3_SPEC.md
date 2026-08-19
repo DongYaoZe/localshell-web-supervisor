@@ -4,7 +4,7 @@ V3 closes the loop from observation to an auditable action decision without enab
 
 ## Private transport decision
 
-CWS does not build a private ChatGPT backend client. See `V3_DECISION.md` for the evidence and revisit criteria.
+LWS does not build a private web chat backend client. See `V3_DECISION.md` for the evidence and revisit criteria.
 
 ## Semantic fence correction
 
@@ -25,7 +25,7 @@ an upgrade safely forces a new two-phase reconciliation.
 
 ## Mandatory two-phase confirmation
 
-`cws dispatch-plan TASK` never acts. It produces an audited `DispatchPlan` after:
+`lws dispatch-plan TASK` never acts. It produces an audited `DispatchPlan` after:
 
 1. loading the previous reconciliation record;
 2. refreshing the current browser/LSM/workspace state;
@@ -77,7 +77,7 @@ transport_enabled=false
 would_dispatch=false
 ```
 
-This means the deterministic control layer considers the world stable enough for a future action adapter. It does **not** mean CWS sent anything.
+This means the deterministic control layer considers the world stable enough for a future action adapter. It does **not** mean LWS sent anything.
 
 ### Takeover design
 
@@ -101,23 +101,23 @@ Dry-run plans are appended to the existing recovery audit history so the supervi
 
 ```powershell
 # First sample / fence
-python -m cws reconcile TASK --uia
+python -m lws reconcile TASK --uia
 
 # After a stability interval, refresh and dry-run the action gate
-python -m cws dispatch-plan TASK --uia
+python -m lws dispatch-plan TASK --uia
 
 # No action is sent. Inspect the audit trail instead.
-python -m cws recovery-history TASK
+python -m lws recovery-history TASK
 ```
 
 ## Transition to an action-capable future version
 
-An action adapter should be considered only after an isolated user-authenticated disposable ChatGPT conversation proves:
+An action adapter should be considered only after an isolated user-authenticated disposable web chat conversation proves:
 
 - exact worker identity survives the selected transport;
 - a Continue/new-turn action can be positively correlated to the intended worker;
 - page-close/reopen semantics are understood if parking is involved;
 - duplicate dispatch can be fenced across crashes/restarts;
-- a successful dispatch has a durable acknowledgement/attempt ID before CWS enters `RECOVERING`.
+- a successful dispatch has a durable acknowledgement/attempt ID before LWS enters `RECOVERING`.
 
 Until those invariants are demonstrated, V3 stops at deterministic dry-run planning.

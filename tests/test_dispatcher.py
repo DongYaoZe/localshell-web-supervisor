@@ -1,13 +1,13 @@
 import unittest
 
-from cws.dispatcher import (
+from lws.dispatcher import (
     DispatchAction,
     DispatchDisabled,
     DispatchPolicy,
     build_dispatch_plan,
     execute_dispatch,
 )
-from cws.models import (
+from lws.models import (
     Assessment,
     BrowserObservation,
     LsmObservation,
@@ -19,7 +19,7 @@ from cws.models import (
     WorkerStatus,
     WorkspaceObservation,
 )
-from cws.reconcile import build_reconciliation_record
+from lws.reconcile import build_reconciliation_record
 
 
 NOW = 1000.0
@@ -39,7 +39,7 @@ def task():
     )
 
 
-def worker(*, url="https://chatgpt.com/c/x", status=WorkerStatus.ACTIVE):
+def worker(*, url="https://web.example/c/x", status=WorkerStatus.ACTIVE):
     return WorkerRecord(
         worker_id="w1",
         task_id="t1",
@@ -71,7 +71,7 @@ def browser(
     return BrowserObservation(
         worker_id="w1",
         observed_at=observed_at,
-        url="https://chatgpt.com/c/x",
+        url="https://web.example/c/x",
         generating=generating,
         send_button_ready=send_ready,
         pending_tool_calls=1,
@@ -121,7 +121,7 @@ def network(*, quiet_since=NOW - 100, observed_at=NOW):
         source="cdp",
         sample_started_at=NOW - 2,
         sample_ended_at=NOW,
-        page_url="https://chatgpt.com/c/x",
+        page_url="https://web.example/c/x",
         event_count=0,
         last_activity_at=quiet_since,
         quiet_since_at=quiet_since,
@@ -338,12 +338,12 @@ class DispatcherTests(unittest.TestCase):
 
     def test_registered_worker_url_must_match_observed_url(self):
         previous = build_reconciliation_record(
-            task(), assessment(), worker=worker(url="https://chatgpt.com/c/expected"),
+            task(), assessment(), worker=worker(url="https://web.example/c/expected"),
             browser=browser(), network=None, lsm=lsm(), workspace=workspace(),
             created_at=NOW - 20,
         )
         current = build_reconciliation_record(
-            task(), assessment(), worker=worker(url="https://chatgpt.com/c/expected"),
+            task(), assessment(), worker=worker(url="https://web.example/c/expected"),
             browser=browser(), network=None, lsm=lsm(), workspace=workspace(),
             created_at=NOW - 10,
         )

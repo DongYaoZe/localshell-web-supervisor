@@ -7,8 +7,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from cws.cli import _read_json_file, main
-from cws.ram import MemoryProbeUnavailable
+from lws.cli import _read_json_file, main
+from lws.ram import MemoryProbeUnavailable
 
 
 class CliInputTests(unittest.TestCase):
@@ -21,8 +21,8 @@ class CliInputTests(unittest.TestCase):
     def test_json_file_accepts_plain_utf8(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "payload.json"
-            path.write_text('{"name":"cws"}', encoding="utf-8")
-            self.assertEqual(_read_json_file(path), {"name": "cws"})
+            path.write_text('{"name":"lws"}', encoding="utf-8")
+            self.assertEqual(_read_json_file(path), {"name": "lws"})
 
     def test_page_close_cli_requires_stronger_tool_gate_only_when_requested(self):
         with tempfile.TemporaryDirectory() as td:
@@ -98,10 +98,10 @@ class CliInputTests(unittest.TestCase):
             root = Path(td)
             out = io.StringIO()
             with (
-                patch("cws.cli.detect_lsm_state_dir", return_value=None),
-                patch("cws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
+                patch("lws.cli.detect_lsm_state_dir", return_value=None),
+                patch("lws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
                 patch(
-                    "cws.cli.observe_windows_process_group",
+                    "lws.cli.observe_windows_process_group",
                     side_effect=MemoryProbeUnavailable("fixture"),
                 ),
                 redirect_stdout(out),
@@ -135,10 +135,10 @@ class CliInputTests(unittest.TestCase):
             evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
             out = io.StringIO()
             with (
-                patch("cws.cli.detect_lsm_state_dir", return_value=None),
-                patch("cws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
+                patch("lws.cli.detect_lsm_state_dir", return_value=None),
+                patch("lws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
                 patch(
-                    "cws.cli.observe_windows_process_group",
+                    "lws.cli.observe_windows_process_group",
                     side_effect=MemoryProbeUnavailable("fixture"),
                 ),
                 redirect_stdout(out),
@@ -220,10 +220,10 @@ class CliInputTests(unittest.TestCase):
 
             out = io.StringIO()
             with (
-                patch("cws.cli.detect_lsm_state_dir", return_value=None),
-                patch("cws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
+                patch("lws.cli.detect_lsm_state_dir", return_value=None),
+                patch("lws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
                 patch(
-                    "cws.cli.observe_windows_process_group",
+                    "lws.cli.observe_windows_process_group",
                     side_effect=MemoryProbeUnavailable("fixture"),
                 ),
                 redirect_stdout(out),
@@ -243,10 +243,10 @@ class CliInputTests(unittest.TestCase):
 
             err = io.StringIO()
             with (
-                patch("cws.cli.detect_lsm_state_dir", return_value=None),
-                patch("cws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
+                patch("lws.cli.detect_lsm_state_dir", return_value=None),
+                patch("lws.cli.observe_system_memory", side_effect=MemoryProbeUnavailable("fixture")),
                 patch(
-                    "cws.cli.observe_windows_process_group",
+                    "lws.cli.observe_windows_process_group",
                     side_effect=MemoryProbeUnavailable("fixture"),
                 ),
                 redirect_stderr(err),
@@ -295,7 +295,7 @@ class CliInputTests(unittest.TestCase):
                 ])
             self.assertEqual(code, 2)
             self.assertIn("provenance", err.getvalue())
-            from cws.registry import Registry
+            from lws.registry import Registry
             registry = Registry(root / "registry.sqlite3")
             try:
                 self.assertEqual(registry.page_capabilities(), [])
@@ -313,7 +313,7 @@ class CliInputTests(unittest.TestCase):
                 ],
             ):
                 err = io.StringIO()
-                with patch("cws.cli._assessment") as assessment, redirect_stderr(err):
+                with patch("lws.cli._assessment") as assessment, redirect_stderr(err):
                     code = main(argv)
                 self.assertEqual(code, 12)
                 assessment.assert_not_called()

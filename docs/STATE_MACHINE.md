@@ -1,6 +1,6 @@
 # State machine
 
-CWS uses task states, not ChatGPT message states.
+LWS uses task states, not web chat message states.
 
 ```text
 QUEUED -> STARTING -> RUNNING
@@ -31,7 +31,7 @@ Any nonterminal state may be explicitly ABANDONED.
 
 ## Classification invariants
 
-1. A live LSM in-flight call or tracked active job wins over an apparently idle ChatGPT page: classify `RUNNING`.
+1. A live LSM in-flight call or tracked active job wins over an apparently idle web chat page: classify `RUNNING`.
 2. Browser delivery error => `RECONCILING`, not automatic replay.
 3. Send/composer ready + pending tool card + prolonged DOM silence => contradictory lifecycle => `RECONCILING`.
 4. Active LSM continuation pending => `RUNNING`; do not race it.
@@ -44,4 +44,4 @@ Any nonterminal state may be explicitly ABANDONED.
 
 ## Why no `continue` state
 
-`continue` is an action on a worker, not a durable task state. The action may start a new ChatGPT turn while the previous message-delivery lifecycle is broken. CWS therefore models it as a possible recovery dispatch after reconciliation, not as a state transition shortcut.
+`continue` is an action on a worker, not a durable task state. The action may start a new web chat turn while the previous message-delivery lifecycle is broken. LWS therefore models it as a possible recovery dispatch after reconciliation, not as a state transition shortcut.

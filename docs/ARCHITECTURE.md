@@ -5,10 +5,10 @@
 The execution stack is:
 
 ```text
-chatgpt-web-supervisor
+localshell-web-supervisor
         |
         v
-ChatGPT Web conversation workers
+web chat conversation workers
         |
         v
 Local Shell MCP
@@ -18,7 +18,7 @@ session / plan / jobs / browser
 local workspace
 ```
 
-The failure domains are not aligned. ChatGPT Web message delivery can stall after a local side effect has completed. Conversely, the page can render as idle while Local Shell still has real work in flight. Human monitoring does not scale to dozens of workers.
+The failure domains are not aligned. web chat message delivery can stall after a local side effect has completed. Conversely, the page can render as idle while Local Shell still has real work in flight. Human monitoring does not scale to dozens of workers.
 
 The supervisor's job is not to execute project work. It owns durable task identity, worker leases, observation, health classification, recovery fencing, and attention scheduling.
 
@@ -49,7 +49,7 @@ A browser `Send` button is weak evidence. An active durable LSM tool lease or tr
 
 ## Local Shell MCP integration boundary
 
-CWS does not rewrite LSM's lifecycle machinery. In the inspected v4.0.1 deployment LSM already provides:
+LWS does not rewrite LSM's lifecycle machinery. In the inspected v4.0.1 deployment LSM already provides:
 
 - durable `sessions/<session_id>.json` including run history, plan, activity, and in-flight calls;
 - a 900 s plan execution lease and continuation claim/reservation/report protocol (max 10 attempts);
@@ -60,7 +60,7 @@ CWS does not rewrite LSM's lifecycle machinery. In the inspected v4.0.1 deployme
 
 V0's `FileLsmTelemetry` is deliberately read-only. It does **not** become another MCP client and does not mutate LSM private state. Mutations such as takeover must continue to go through LSM's supported tool boundary in a later guarded dispatcher.
 
-The observed hardened deployment stores state at `C:\ProgramData\LocalShellMCP-Hardened\control\state`; this is configuration, not an architectural constant. CWS supports an explicit state-dir override and environment-based discovery.
+The observed hardened deployment stores state at `C:\ProgramData\LocalShellMCP-Hardened\control\state`; this is configuration, not an architectural constant. LWS supports an explicit state-dir override and environment-based discovery.
 
 ## Browser integration boundary
 
@@ -69,18 +69,18 @@ LSM's high-level Playwright manager already offers persistent profiles, storage 
 V0 consumes normalized DOM observations. V1 adds two safe observation routes without changing execution transport:
 
 - exact-URL Windows UI Automation for user-authorized top-level windows in normal Chrome; duplicate URL matches fail closed unless an exact HWND is supplied;
-- Network-domain lifecycle metadata for CWS-owned or explicitly exposed CDP pages.
+- Network-domain lifecycle metadata for LWS-owned or explicitly exposed CDP pages.
 
 V1 records timestamps for:
 
 - request/fetch/XHR start and completion/failure;
 - streaming response activity / byte progress when observable;
-- WebSocket events if ChatGPT uses them for the relevant lifecycle;
+- WebSocket events if web chat uses them for the relevant lifecycle;
 - last network activity and network silence;
 - DOM mutation/activity silence;
 - composer and tool-card contradiction states.
 
-It does not retain request/response bodies, auth headers/cookies, or private ChatGPT payloads. Observation comes before transport reimplementation.
+It does not retain request/response bodies, auth headers/cookies, or private web chat payloads. Observation comes before transport reimplementation.
 
 ## Heartbeat model
 
@@ -94,7 +94,7 @@ A task has multiple clocks:
 - tracked job update/status timestamps;
 - V1 network activity and conservative continuous-quiet baseline.
 
-A heartbeat is evidence, not a completion marker. CWS classifies from the combination.
+A heartbeat is evidence, not a completion marker. LWS classifies from the combination.
 
 ## Reconcile and recovery protocol
 
@@ -151,10 +151,10 @@ V2 target topology:
 - small active-worker page pool;
 - one or a few probe pages reusing a browser context/profile to inspect parked conversation URLs sequentially;
 - parked conversations stored as durable URLs/worker records, not resident tabs;
-- resource blocking for probes where it does not break ChatGPT state detection;
+- resource blocking for probes where it does not break web chat state detection;
 - explicit experiments to determine whether closing an executing page affects server-side generation/tool delivery.
 
-0.5 now has authenticated ChatGPT-specific evidence for two narrow continuity properties: a
+0.5 now has authenticated web chat-specific evidence for two narrow continuity properties: a
 pure model response continued with no page open, and one harmless Local Shell MCP job that
 was durably running at close later succeeded and resumed correctly after reopen.
 
@@ -197,7 +197,7 @@ This converts the user's role from polling dozens of conversations to resolving 
 ## Supervisor process lease
 
 The supervisor is itself a control-plane process, so duplicate resident watchdogs are a
-safety issue. `cws watch` owns a renewable SQLite lease scoped to the registry. A second
+safety issue. `lws watch` owns a renewable SQLite lease scoped to the registry. A second
 resident watchdog refuses to start while the lease is fresh; if a running watchdog loses
 ownership it exits rather than risk duplicate future control-plane actions. One-shot scans
 do not acquire the resident lease.
@@ -212,7 +212,7 @@ the owner with a fresh `stop:<uuid>` lease. The old watcher then fails its next 
 and exits by its existing safety path, while the fresh stop lease prevents a replacement
 from racing shutdown. Once the resident PID disappears, the stop lease is cleared.
 
-Production hosting is therefore independent of a ChatGPT conversation and does not rely
+Production hosting is therefore independent of a web chat conversation and does not rely
 on an LSM tracked shell job owning the full Windows descendant process tree. See
 `LSM_FINDINGS.md` for the bootstrap experiment and `OPERATIONS.md` for host commands.
 
@@ -228,12 +228,12 @@ the browser-worker identity/action boundary and revalidation rules are proven in
 
 ### V2
 Low-memory worker planning + active/probe page lease pool + parking bookkeeping + RAM
-telemetry. The original V2 layer kept ChatGPT page-close as an experiment gate. 0.5 later
+telemetry. The original V2 layer kept web-page close/reopen as an experiment gate. 0.5 later
 produced authenticated continuity evidence; 0.6 stores that evidence as expiring, versioned,
 deployment-scoped capabilities. The V2 planner still does not close live workers automatically.
 
 ### V3
-Evidence-based NO-GO on private ChatGPT endpoint reimplementation. V3 instead added a
+Evidence-based NO-GO on private web chat endpoint reimplementation. V3 instead added a
 mandatory two-sample semantic fence and deterministic dry-run dispatcher. Normal
 `dispatch-plan` behavior still has `transport_enabled=false` / `would_dispatch=false`.
 A separate explicit one-shot executor may enable the exact-window UIA module only after
@@ -280,11 +280,11 @@ process restart and ambiguous legacy worker combinations fail closed during boot
 runtime orchestration adapter refreshes LSM/workspace evidence read-only and carries global
 probe/action fences into the pure planner. Adversarial closure additionally rejects duplicate
 task inputs, future exact-window/probe evidence, future probe observations, and wall-clock
-heartbeat rollback. Automatic ChatGPT conversation creation, watchdog auto-dispatch, and
+heartbeat rollback. Automatic web chat conversation creation, watchdog auto-dispatch, and
 live-worker auto-close remain disabled in 0.8. See `V6_SPEC.md`.
 
 ### 0.9 same-worker timeout-autopilot milestone
-The resident watchdog gains one explicit mutation mode for recognized ChatGPT Web delivery
+The resident watchdog gains one explicit mutation mode for recognized web chat delivery
 errors. It reuses the existing exact current-worker window and the existing fenced executor;
 it does not add a second send path. Before submission it still requires two stable semantic
 reconciliation samples, durable LSM/workspace agreement, a fresh exact-window binding, no

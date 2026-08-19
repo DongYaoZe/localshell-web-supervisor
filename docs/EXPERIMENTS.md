@@ -1,24 +1,24 @@
 # Isolated browser experiments
 
-CWS experiments that can alter a ChatGPT page or submit a turn use disposable conversations/windows and exact identity fences. The user's active work conversation is excluded explicitly.
+LWS experiments that can alter a web chat page or submit a turn use disposable conversations/windows and exact identity fences. The user's active work conversation is excluded explicitly.
 
 This document records the evidence behind the 0.5 capability boundary. It is not a recipe to bypass authentication.
 
 ## Authentication-path result
 
-A dedicated persistent Playwright profile (`cws-disposable-v4`) could be created without copied authentication, but normal login was not usable in that browser on this machine: Google rejected the browser and the phone-number path remained blocked by repeated Cloudflare checks.
+A dedicated persistent Playwright profile (`lws-disposable-v4`) could be created without copied authentication, but normal login was not usable in that browser on this machine: Google rejected the browser and the phone-number path remained blocked by repeated Cloudflare checks.
 
-The user then explicitly authorized a cookie-copy experiment. CWS performed a one-time local diagnostic rather than adding product functionality:
+The user then explicitly authorized a cookie-copy experiment. LWS performed a one-time local diagnostic rather than adding product functionality:
 
 - the locked Chrome cookie database was copied from a temporary Windows VSS snapshot without stopping the user's Chrome;
 - the temporary shadow copy was deleted and verified absent;
-- the offline clone was pruned to ChatGPT/OpenAI-domain rows only;
+- the offline clone was pruned to web chat/OpenAI-domain rows only;
 - no cookie value was printed or sent anywhere;
 - the relevant source cookies, including auth/session/token-like rows, all used Chrome `v20` App-Bound encryption;
 - opening the cloned profile in the same installed Google Chrome discarded the usable auth cookies and remained logged out;
 - no plaintext session token extraction/decryption was attempted.
 
-Conclusion: **cookie/profile migration is a NO-GO architecture path** for CWS. Production code still has no cookie-export/import feature.
+Conclusion: **cookie/profile migration is a NO-GO architecture path** for LWS. Production code still has no cookie-export/import feature.
 
 ## Preferred authenticated isolation: disposable normal-Chrome window
 
@@ -59,7 +59,7 @@ The sanitized evidence showed:
 - valid signed-in state;
 - no duplicate user turn.
 
-`cws evaluate-page-close` returned:
+`lws evaluate-page-close` returned:
 
 ```text
 generation_parking_safe=true
@@ -73,7 +73,7 @@ A later bounded experiment strengthened the evidence. Before close, its persiste
 
 - a specific tracked Local Shell job id/name;
 - durable job status `running`;
-- positive ChatGPT Stop/generation evidence;
+- positive web chat Stop/generation evidence;
 - exact disposable conversation/window identity;
 - pre-close text hash.
 
@@ -88,7 +88,7 @@ tool_execution_parking_safe=true
 
 when run against that D-round evidence, including `--require-tool`.
 
-CWS still keeps live LSM work `DO_NOT_CLOSE` in the normal `pool-plan` policy. The evidence is representable as versioned, expiring capability provenance, but an automatic live-worker eviction path still does not exist.
+LWS still keeps live LSM work `DO_NOT_CLOSE` in the normal `pool-plan` policy. The evidence is representable as versioned, expiring capability provenance, but an automatic live-worker eviction path still does not exist.
 
 ## Action acknowledgement and crash-fence evidence
 
@@ -119,8 +119,8 @@ Evidence JSON is local/ignored and can be evaluated with:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
-python -m cws evaluate-page-close --file .cws\page-close-evidence.json --require-tool --json
+python -m lws evaluate-page-close --file .lws\page-close-evidence.json --json
+python -m lws evaluate-page-close --file .lws\page-close-evidence.json --require-tool --json
 ```
 
 The generation gate fails closed for anonymous/localhost tests, copied authentication, ambiguous isolation, changed conversation identity, missing background progress, duplicate turns, invalid auth or unchanged signatures.
@@ -144,4 +144,4 @@ The 0.5 experiments remain the evidence source; 0.6 consumes that evidence conse
 - explicit one-shot fenced current-worker recovery execution: **implemented in 0.6**;
 - resident-watchdog automatic recovery dispatch: **not enabled**;
 - automatic live-LSM page eviction: **not enabled**;
-- private ChatGPT endpoint reconstruction: **still unnecessary and out of scope**.
+- private web chat endpoint reconstruction: **still unnecessary and out of scope**.

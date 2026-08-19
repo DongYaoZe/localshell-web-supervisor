@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from cws.models import ProbeMutationState, ProbeWindowSlotBinding, WorkerRecord, WorkerStatus
-from cws.page_runtime import (
+from lws.models import ProbeMutationState, ProbeWindowSlotBinding, WorkerRecord, WorkerStatus
+from lws.page_runtime import (
     _CLOSE_SCRIPT,
     _FIND_SCRIPT,
     ChromeUiaProbeWindowTransport,
@@ -35,7 +35,7 @@ def slot(url=URL1, worker_id="w1", expires=200.0, owner="owner"):
         123,
         456,
         CHROME,
-        "windows_uia_cws_probe",
+        "windows_uia_lws_probe",
         100.0,
         100.0,
         expires,
@@ -75,7 +75,7 @@ class ProbeSlotPlannerTests(unittest.TestCase):
 
     def test_tag_is_exact_and_non_secret(self):
         actual = tagged_probe_url(URL1, slot_id="probe:default", owner_token="abc")
-        self.assertTrue(actual.endswith("#cws-probe=probe:default:abc"))
+        self.assertTrue(actual.endswith("#lws-probe=probe:default:abc"))
         self.assertTrue(slot_owns_actual_url(slot(owner="abc")))
 
     def test_disabled_transport_never_mutates(self):
@@ -83,7 +83,7 @@ class ProbeSlotPlannerTests(unittest.TestCase):
         with self.assertRaises(ProbeWindowTransportDisabled):
             DisabledProbeWindowTransport().execute(plan, existing=None)
 
-    @patch("cws.page_runtime.os.name", "nt")
+    @patch("lws.page_runtime.os.name", "nt")
     def test_reuse_blocks_if_executable_identity_changed(self):
         existing = slot()
         plan = plan_probe_slot(worker(), existing, now=150.0)
@@ -106,8 +106,8 @@ class ProbeSlotPlannerTests(unittest.TestCase):
         self.assertFalse(out.side_effect_possible)
         self.assertIn("identity changed", out.detail)
 
-    @patch("cws.page_runtime.os.name", "nt")
-    @patch("cws.page_runtime.subprocess.Popen")
+    @patch("lws.page_runtime.os.name", "nt")
+    @patch("lws.page_runtime.subprocess.Popen")
     def test_open_transport_binds_unique_tagged_window(self, popen):
         target = worker()
         plan = plan_probe_slot(target, None, now=150.0)
@@ -143,8 +143,8 @@ class ProbeSlotPlannerTests(unittest.TestCase):
         self.assertEqual(out.binding.window_handle, 99)
         popen.assert_called_once()
 
-    @patch("cws.page_runtime.os.name", "nt")
-    @patch("cws.page_runtime.subprocess.Popen")
+    @patch("lws.page_runtime.os.name", "nt")
+    @patch("lws.page_runtime.subprocess.Popen")
     def test_rotate_refuses_to_open_if_exact_close_is_ambiguous(self, popen):
         existing = slot()
         target = worker(URL2, worker_id="w2")
@@ -169,8 +169,8 @@ class ProbeSlotPlannerTests(unittest.TestCase):
         self.assertFalse(out.side_effect_possible)
         popen.assert_not_called()
 
-    @patch("cws.page_runtime.os.name", "nt")
-    @patch("cws.page_runtime.subprocess.Popen")
+    @patch("lws.page_runtime.os.name", "nt")
+    @patch("lws.page_runtime.subprocess.Popen")
     def test_rotate_does_not_open_without_ready_to_open_authority(self, popen):
         existing = slot()
         target = worker(URL2, worker_id="w2")

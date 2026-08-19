@@ -1,14 +1,14 @@
-# V4 / CWS 0.6 — reusable page identity and explicit recovery execution
+# V4 / LWS 0.6 — reusable page identity and explicit recovery execution
 
-CWS 0.6 advances the control plane without turning the resident watchdog into an autonomous browser mutator. The default remains observation and planning. Mutation exists only in explicit, bounded paths with durable write-ahead state.
+LWS 0.6 advances the control plane without turning the resident watchdog into an autonomous browser mutator. The default remains observation and planning. Mutation exists only in explicit, bounded paths with durable write-ahead state.
 
 ## 1. Single reusable probe slot
 
-A parked conversation may be sampled through one logical CWS probe slot.
+A parked conversation may be sampled through one logical LWS probe slot.
 
 The planner has four outcomes:
 
-- `REUSE` — the fresh CWS-owned slot already points at the same parked worker;
+- `REUSE` — the fresh LWS-owned slot already points at the same parked worker;
 - `OPEN` — no slot exists, so one tagged slot may be created by an explicitly enabled transport;
 - `ROTATE` — the fresh owned slot points at another parked worker; the old exact window must be proven absent before a replacement may open;
 - `BLOCKED` — stale, ambiguous, non-owned, active-worker, or invalid-conversation state.
@@ -85,7 +85,7 @@ Until that proof exists, the action remains unresolved and duplicate dispatch st
 - auto-close a live/generating/LSM-active worker page;
 - treat a stale HWND or stale probe slot as authority;
 - open a second probe window because the first slot is ambiguous;
-- use private ChatGPT transport endpoints;
+- use private web chat transport endpoints;
 - move browser sign-in state between profiles;
 - interpret a capability from another browser major/surface/evaluator version as valid.
 

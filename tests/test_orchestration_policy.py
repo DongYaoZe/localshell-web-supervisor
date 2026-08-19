@@ -1,9 +1,9 @@
 import unittest
 from dataclasses import replace
 
-from cws.actions import ActionAttempt, ActionAttemptState
-from cws.capabilities import PAGE_CLOSE_EVALUATOR_VERSION, runtime_context
-from cws.models import (
+from lws.actions import ActionAttempt, ActionAttemptState
+from lws.capabilities import PAGE_CLOSE_EVALUATOR_VERSION, runtime_context
+from lws.models import (
     Assessment,
     LsmObservation,
     PageCapabilityKind,
@@ -15,14 +15,14 @@ from cws.models import (
     WorkerWindowBinding,
     WorkspaceObservation,
 )
-from cws.orchestration import (
+from lws.orchestration import (
     OrchestrationDecisionKind,
     OrchestrationPolicy,
     TaskOrchestrationInput,
     evaluate_task,
     plan_orchestration,
 )
-from cws.reconcile import build_reconciliation_record
+from lws.reconcile import build_reconciliation_record
 
 
 NOW = 1000.0

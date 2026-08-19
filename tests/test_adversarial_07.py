@@ -10,16 +10,16 @@ from unittest.mock import patch
 
 import pytest
 
-from cws.actions import (
+from lws.actions import (
     ActionAcknowledgement,
     ActionAttempt,
     ActionAttemptState,
     ActionBlocked,
 )
-from cws.browser_pool import PagePool, PagePoolError, PageRole
-from cws.capabilities import CapabilityContext, capability_matches_context
-from cws.lsm import FileLsmTelemetry
-from cws.models import (
+from lws.browser_pool import PagePool, PagePoolError, PageRole
+from lws.capabilities import CapabilityContext, capability_matches_context
+from lws.lsm import FileLsmTelemetry
+from lws.models import (
     Assessment,
     BrowserObservation,
     LsmObservation,
@@ -33,7 +33,7 @@ from cws.models import (
     WorkerStatus,
     WorkspaceObservation,
 )
-from cws.page_runtime import (
+from lws.page_runtime import (
     _FIND_SCRIPT,
     ChromeUiaProbeWindowTransport,
     ProbeSlotAction,
@@ -41,16 +41,16 @@ from cws.page_runtime import (
     probe_operation_from_plan,
     tagged_probe_url,
 )
-from cws.probe_ops import (
+from lws.probe_ops import (
     ProbeMutationObservation,
     ProbeReconcileOutcome,
     ProbeWindowMatch,
     decide_probe_reconciliation,
 )
-from cws.reconcile import build_reconciliation_record, fence_matches
-from cws.registry import Registry
-from cws.scheduler import attention_queue
-from cws.uia_actions import UiaAckObservation, acknowledgement_from_uia_observation
+from lws.reconcile import build_reconciliation_record, fence_matches
+from lws.registry import Registry
+from lws.scheduler import attention_queue
+from lws.uia_actions import UiaAckObservation, acknowledgement_from_uia_observation
 
 
 URL1 = "https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -96,7 +96,7 @@ def probe_slot(*, url=URL1, worker_id="w1", owner="owner", expires_at=1200.0):
         window_handle=111,
         browser_pid=222,
         chrome_executable=CHROME,
-        source="windows_uia_cws_probe",
+        source="windows_uia_lws_probe",
         bound_at=900.0,
         observed_at=900.0,
         expires_at=expires_at,
@@ -312,7 +312,7 @@ class LsmDurableEvidenceRaceTests(unittest.TestCase):
             (root / "jobs.json").write_text(
                 json.dumps({"version": 2, "jobs": []}), encoding="utf-8"
             )
-            with patch("cws.lsm.time.time", return_value=10_000):
+            with patch("lws.lsm.time.time", return_value=10_000):
                 observation = FileLsmTelemetry(root).observe(
                     task_id="t1", session_id="s1", tracked_job_ids=[]
                 )
@@ -358,7 +358,7 @@ class LsmDurableEvidenceRaceTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch("cws.lsm.time.time", return_value=10_000):
+            with patch("lws.lsm.time.time", return_value=10_000):
                 observation = FileLsmTelemetry(root).observe(
                     task_id="t1", session_id="s1", tracked_job_ids=["j1"]
                 )
@@ -448,7 +448,7 @@ class ActionAcknowledgementAdversarialTests(unittest.TestCase):
 
 
 class ProbeIdentityAdversarialTests(unittest.TestCase):
-    @patch("cws.page_runtime.os.name", "nt")
+    @patch("lws.page_runtime.os.name", "nt")
     def test_reuse_blocks_when_hwnd_or_pid_identity_changed(self):
         existing = probe_slot()
         plan = plan_probe_slot(worker(), existing, now=NOW)
@@ -467,8 +467,8 @@ class ProbeIdentityAdversarialTests(unittest.TestCase):
         self.assertFalse(result.side_effect_possible)
         self.assertIn("identity changed", result.detail)
 
-    @patch("cws.page_runtime.os.name", "nt")
-    @patch("cws.page_runtime.subprocess.Popen")
+    @patch("lws.page_runtime.os.name", "nt")
+    @patch("lws.page_runtime.subprocess.Popen")
     def test_rotation_never_opens_new_target_if_old_owner_tag_is_multiply_bound(self, popen):
         existing = probe_slot()
         target = worker(URL2, worker_id="w2")

@@ -3,16 +3,16 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from cws.capabilities import (
+from lws.capabilities import (
     CapabilityProvenanceError,
     PAGE_CLOSE_EVALUATOR_VERSION,
     build_page_close_capabilities,
     capability_matches_context,
     runtime_context,
 )
-from cws.lifecycle import PageCloseEvidence
-from cws.models import PageCapabilityKind
-from cws.registry import Registry
+from lws.lifecycle import PageCloseEvidence
+from lws.models import PageCapabilityKind
+from lws.registry import Registry
 
 URL = "https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 

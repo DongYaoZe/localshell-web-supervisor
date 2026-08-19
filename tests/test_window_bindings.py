@@ -4,10 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cws.cli import _refresh_uia
-from cws.db import SCHEMA_VERSION
-from cws.models import BrowserObservation, WorkerStatus
-from cws.registry import Registry
+from lws.cli import _refresh_uia
+from lws.db import SCHEMA_VERSION
+from lws.models import BrowserObservation, WorkerStatus
+from lws.registry import Registry
 
 
 class DummyProbe:
@@ -36,7 +36,7 @@ class WindowBindingTests(unittest.TestCase):
             project="p",
             objective="o",
             cwd=td,
-            conversation_url="https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            conversation_url="https://web.example/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         )
         return reg, task
 
@@ -79,7 +79,7 @@ class WindowBindingTests(unittest.TestCase):
                 )
                 second = reg.add_worker(
                     "t1",
-                    "https://chatgpt.com/c/ffffffff-1111-2222-3333-444444444444",
+                    "https://web.example/c/ffffffff-1111-2222-3333-444444444444",
                 )
                 self.assertIsNone(reg.get_worker_window_binding(first.worker_id))
                 reg.bind_worker_window(
@@ -137,7 +137,7 @@ class WindowBindingTests(unittest.TestCase):
                         return obs
 
                 probe = CapturingProbe()
-                with patch("cws.registry.time.time", return_value=110.0):
+                with patch("lws.registry.time.time", return_value=110.0):
                     _refresh_uia(reg, task.task_id, probe)
                 self.assertEqual(probe.expected_hwnd, 654321)
                 refreshed = reg.get_worker_window_binding(worker.worker_id)
@@ -182,7 +182,7 @@ class WindowBindingTests(unittest.TestCase):
                 VALUES ('legacy', 'p', 'o', '.', 'QUEUED', '{}', 'wlegacy', 1, 1);
                 INSERT INTO workers
                   (worker_id, task_id, conversation_url, conversation_id, status, started_at)
-                VALUES ('wlegacy', 'legacy', 'https://chatgpt.com/c/legacy', 'legacy', 'active', 1);
+                VALUES ('wlegacy', 'legacy', 'https://web.example/c/legacy', 'legacy', 'active', 1);
                 """
             )
             conn.commit()

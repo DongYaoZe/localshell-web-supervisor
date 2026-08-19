@@ -1,6 +1,6 @@
 import unittest
 
-from cws.browser_pool import PagePool, PagePoolError, PageRole, ProbeResourcePolicy
+from lws.browser_pool import PagePool, PagePoolError, PageRole, ProbeResourcePolicy
 
 
 class PagePoolTests(unittest.TestCase):
@@ -41,9 +41,9 @@ class PagePoolTests(unittest.TestCase):
 
     def test_probe_scheduler_prioritizes_priority_then_oldest(self):
         pool = PagePool()
-        pool.register_probe_target("w1", "https://chatgpt.com/c/1", priority=0, last_probed_at=10)
-        pool.register_probe_target("w2", "https://chatgpt.com/c/2", priority=1, last_probed_at=20)
-        pool.register_probe_target("w3", "https://chatgpt.com/c/3", priority=1, last_probed_at=None)
+        pool.register_probe_target("w1", "https://web.example/c/1", priority=0, last_probed_at=10)
+        pool.register_probe_target("w2", "https://web.example/c/2", priority=1, last_probed_at=20)
+        pool.register_probe_target("w3", "https://web.example/c/3", priority=1, last_probed_at=None)
         self.assertEqual(pool.next_probe_target(now=30).worker_id, "w3")
         pool.mark_probed("w3", now=30)
         self.assertEqual(pool.next_probe_target(now=31).worker_id, "w2")

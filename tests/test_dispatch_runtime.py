@@ -2,23 +2,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.actions import ActionAttemptState, TransportSubmission
-from cws.dispatch_runtime import (
+from lws.actions import ActionAttemptState, TransportSubmission
+from lws.dispatch_runtime import (
     DispatchExecutionPolicy,
     execute_current_worker_recovery,
     reconcile_action_with_uia,
 )
-from cws.dispatcher import DispatchAction, DispatchDisabled, DispatchPlan
-from cws.models import (
+from lws.dispatcher import DispatchAction, DispatchDisabled, DispatchPlan
+from lws.models import (
     BrowserObservation,
     ReconciliationRecord,
     RecoveryRecommendation,
 )
-from cws.registry import Registry
-from cws.uia_actions import UiaAckObservation
+from lws.registry import Registry
+from lws.uia_actions import UiaAckObservation
 
 
-URL = "https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+URL = "https://web.example/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 PROMPT = "Resume safely from the durable checkpoint."
 
@@ -157,7 +157,7 @@ class DispatchRuntimeTests(unittest.TestCase):
         attempt = self.registry.get_action_attempt(result.attempt_id)
         self.assertEqual(self.registry.get_task("t1").recovery_attempts, 1)
         self.assertIn(PROMPT, transport.intent.prompt)
-        self.assertIn(f"CWS-ACTION-{attempt.nonce}", transport.intent.prompt)
+        self.assertIn(f"LWS-ACTION-{attempt.nonce}", transport.intent.prompt)
         self.assertNotIn(PROMPT, str(attempt.metadata))
 
     def test_disabled_or_wrong_confirmation_never_arms(self):
@@ -242,7 +242,7 @@ class DispatchRuntimeTests(unittest.TestCase):
         self.assertTrue(result.acknowledged)
         self.assertEqual(result.state, ActionAttemptState.ACKNOWLEDGED.value)
         attempt = self.registry.get_action_attempt(attempt_id)
-        self.assertEqual(observer.expected_nonce, f"CWS-ACTION-{attempt.nonce}")
+        self.assertEqual(observer.expected_nonce, f"LWS-ACTION-{attempt.nonce}")
         self.assertIsNone(self.registry.unresolved_action_attempt("t1"))
 
     def test_ack_waits_while_generation_is_active_or_nonce_count_is_wrong(self):

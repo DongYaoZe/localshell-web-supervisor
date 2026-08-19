@@ -5,9 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from cws.actions import ActionAttempt, ActionAttemptState
-from cws.capabilities import PAGE_CLOSE_EVALUATOR_VERSION, runtime_context
-from cws.models import (
+from lws.actions import ActionAttempt, ActionAttemptState
+from lws.capabilities import PAGE_CLOSE_EVALUATOR_VERSION, runtime_context
+from lws.models import (
     Assessment,
     LsmObservation,
     PageCapabilityKind,
@@ -15,15 +15,15 @@ from cws.models import (
     SupervisorState,
     WorkspaceObservation,
 )
-from cws.orchestration import OrchestrationDecisionKind, OrchestrationPolicy
-from cws.orchestration_adapter import (
+from lws.orchestration import OrchestrationDecisionKind, OrchestrationPolicy
+from lws.orchestration_adapter import (
     AdvisoryOrchestrationAdapter,
     PageContinuityRequest,
     TaskRuntimeHints,
     TaskSchedulingHistory,
 )
-from cws.reconcile import build_reconciliation_record
-from cws.registry import Registry
+from lws.reconcile import build_reconciliation_record
+from lws.registry import Registry
 
 
 NOW = 2_000_000_000.0
@@ -58,7 +58,7 @@ class FakeWorkspaceProbe:
 class OrchestrationAdapterTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        self.registry = Registry(Path(self.tempdir.name) / "cws.sqlite3")
+        self.registry = Registry(Path(self.tempdir.name) / "lws.sqlite3")
         self.lsm_rows = {}
         self.workspace_rows = {}
         self.adapter = AdvisoryOrchestrationAdapter(
@@ -74,11 +74,11 @@ class OrchestrationAdapterTests(unittest.TestCase):
     def register_task(self, task_id, state=SupervisorState.SUSPECT):
         self.registry.register_task(
             task_id=task_id,
-            project="chatgpt-web-supervisor",
+            project="localshell-web-supervisor",
             objective="test advisory orchestration",
             cwd=f"C:/repo/{task_id}",
             lsm_session_id=f"s-{task_id}",
-            conversation_url=f"https://chatgpt.com/c/{task_id}",
+            conversation_url=f"https://web.example/c/{task_id}",
         )
         self.registry.update_state(task_id, state)
         self.registry.set_checkpoint(task_id, {"git_head": "abc"})
@@ -222,7 +222,7 @@ class OrchestrationAdapterTests(unittest.TestCase):
         capability = PageCapabilityRecord(
             capability_id="cap-adapter-test",
             kind=PageCapabilityKind.GENERATION,
-            scope_host="chatgpt.com",
+            scope_host="web.example",
             browser_family="chrome",
             browser_major=151,
             platform="windows",

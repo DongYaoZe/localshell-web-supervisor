@@ -1,6 +1,6 @@
 import unittest
 
-from cws.lifecycle import (
+from lws.lifecycle import (
     PageCloseEvidence,
     PageIsolationMode,
     evaluate_page_close_evidence,
@@ -14,8 +14,8 @@ class PageCloseEvidenceTests(unittest.TestCase):
             disposable_profile=True,
             normally_authenticated=True,
             auth_material_copied=False,
-            pre_close_url="https://chatgpt.com/c/abc",
-            reopened_url="https://chatgpt.com/c/abc",
+            pre_close_url="https://web.example/c/abc",
+            reopened_url="https://web.example/c/abc",
             pre_close_generating=True,
             close_while_live_confirmed=True,
             background_progress_observed=True,

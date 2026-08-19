@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.action_runtime import submit_armed_action
-from cws.actions import (
+from lws.action_runtime import submit_armed_action
+from lws.actions import (
     ActionAcknowledgement,
     ActionAttemptState,
     ActionBlocked,
@@ -16,10 +16,10 @@ from cws.actions import (
     evidence_digest,
     intent_from_attempt,
 )
-from cws.db import SCHEMA_VERSION, connect
-from cws.dispatcher import DispatchAction, DispatchPlan
-from cws.models import SupervisorState, TaskRecord, WorkerRecord, WorkerStatus
-from cws.registry import Registry
+from lws.db import SCHEMA_VERSION, connect
+from lws.dispatcher import DispatchAction, DispatchPlan
+from lws.models import SupervisorState, TaskRecord, WorkerRecord, WorkerStatus
+from lws.registry import Registry
 
 
 NOW = 1000.0
@@ -44,7 +44,7 @@ def worker(*, worker_id="w1", status=WorkerStatus.ACTIVE):
     return WorkerRecord(
         worker_id=worker_id,
         task_id="t1",
-        conversation_url="https://chatgpt.com/c/x",
+        conversation_url="https://web.example/c/x",
         conversation_id="x",
         status=status,
         started_at=1.0,
@@ -139,7 +139,7 @@ class ActionRegistryTests(unittest.TestCase):
             objective="obj",
             cwd="C:/repo",
             lsm_session_id="s1",
-            conversation_url="https://chatgpt.com/c/x",
+            conversation_url="https://web.example/c/x",
             conversation_id="x",
         )
         # Test fixtures use stable worker id w1, while register_task generates one.
@@ -261,7 +261,7 @@ class RegistryMigrationTests(unittest.TestCase):
                 INSERT INTO tasks VALUES
                     ('legacy','p','o','C:/repo','QUEUED','s1','{}','w1',0,3,1,1);
                 INSERT INTO workers VALUES
-                    ('w1','legacy','https://chatgpt.com/c/x','x','active',1,NULL,NULL);
+                    ('w1','legacy','https://web.example/c/x','x','active',1,NULL,NULL);
                 """
             )
             raw.commit()

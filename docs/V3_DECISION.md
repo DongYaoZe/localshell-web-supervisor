@@ -1,36 +1,36 @@
-# V3 decision: do not build a private ChatGPT Web API client
+# V3 decision: do not build a private web chat API client
 
 ## Decision
 
-**NO-GO for private ChatGPT Web transport reimplementation as the default CWS architecture.**
+**NO-GO for private web chat transport reimplementation as the default LWS architecture.**
 
-V3 does not extract browser authentication material, reproduce ChatGPT private endpoints, or create a Python `requests`/WebSocket client that impersonates the web application.
+V3 does not extract browser authentication material, reproduce private web-service endpoints, or create a Python `requests`/WebSocket client that impersonates the web application.
 
 This is an evidence-based engineering decision, not a permanent claim that browser transports can never fail. The bar for revisiting it is that the supported browser-observation/action route is shown incapable of meeting reliability requirements even after V1/V2 orchestration is mature.
 
 ## Evidence accumulated through V0-V2
 
-### Durable execution truth already exists below ChatGPT Web
+### Durable execution truth already exists below web chat
 
-Local Shell MCP v4.0.1 already persists logical sessions, Goal plans, continuation state, per-tool in-flight leases/heartbeats, tracked jobs, and guarded takeover semantics. CWS can reconcile those facts with actual Git/workspace state without asking ChatGPT's private backend to explain what happened.
+Local Shell MCP v4.0.1 already persists logical sessions, Goal plans, continuation state, per-tool in-flight leases/heartbeats, tracked jobs, and guarded takeover semantics. LWS can reconcile those facts with actual Git/workspace state without asking web chat's private backend to explain what happened.
 
 ### The current authenticated browser can be observed without copying credentials
 
-Windows UI Automation successfully matched the user-authorized current conversation by exact URL and exposed positive generation/composer/error evidence. CWS did not read a cookie database, token, password, or browser profile secret and did not attach DevTools to the normal Chrome instance.
+Windows UI Automation successfully matched the user-authorized current conversation by exact URL and exposed positive generation/composer/error evidence. LWS did not read a cookie database, token, password, or browser profile secret and did not attach DevTools to the normal Chrome instance.
 
 This gives the watchdog a browser-side signal while preserving the user's existing authentication boundary.
 
 ### Dedicated browser/CDP telemetry works without parsing private payloads
 
-A CWS-owned isolated Chromium can provide Network-domain lifecycle timing/count metadata. A localhost-only end-to-end smoke captured request/response/data/finished activity successfully. The observer deliberately ignores headers, cookies, POST data, and response bodies.
+A LWS-owned isolated Chromium can provide Network-domain lifecycle timing/count metadata. A localhost-only end-to-end smoke captured request/response/data/finished activity successfully. The observer deliberately ignores headers, cookies, POST data, and response bodies.
 
-This is sufficient for liveness/silence correlation. The supervisor does not need to understand or replay ChatGPT's private protocol merely to detect stalled delivery.
+This is sufficient for liveness/silence correlation. The supervisor does not need to understand or replay the provider's private protocol merely to detect stalled delivery.
 
-### Fresh isolated ChatGPT browser access is an authentication boundary, not a reverse-engineering task
+### Fresh isolated provider browser access is an authentication boundary, not a reverse-engineering task
 
-A new isolated Chromium without normal user authentication reached a Cloudflare/sign-in boundary. CWS closed it. It did not copy the normal Chrome login state or attempt to bypass the access-control page.
+A new isolated Chromium without normal user authentication reached a Cloudflare/sign-in boundary. LWS closed it. It did not copy the normal Chrome login state or attempt to bypass the access-control page.
 
-A future CWS-owned profile should be authenticated through ordinary explicit user interaction if needed.
+A future LWS-owned profile should be authenticated through ordinary explicit user interaction if needed.
 
 ### Reconciliation is now stronger than transport state alone
 
@@ -38,7 +38,7 @@ V1 stores sanitized deterministic `fence_token`s over worker/browser, LSM, works
 
 ### RAM pressure can be addressed independently
 
-V2 now has system/Chrome memory telemetry, a conservative worker pool planner, active/probe page leases, and parked-worker bookkeeping. The remaining ChatGPT-specific page-close/reopen question is an experiment gate, not evidence that a private endpoint client is required.
+V2 now has system/Chrome memory telemetry, a conservative worker pool planner, active/probe page leases, and parked-worker bookkeeping. The remaining web chat-specific page-close/reopen question is an experiment gate, not evidence that a private endpoint client is required.
 
 ## Costs avoided by the NO-GO decision
 
@@ -55,7 +55,7 @@ Private Web transport would introduce several new failure modes:
 
 V3 adds a **disabled-by-default deterministic dispatch gate**.
 
-`cws dispatch-plan TASK`:
+`lws dispatch-plan TASK`:
 
 1. reads the previous reconciliation record;
 2. refreshes browser/LSM/workspace evidence and persists a new reconciliation;

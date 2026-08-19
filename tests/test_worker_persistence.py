@@ -3,11 +3,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.db import SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION
-from cws.models import SupervisorState, WorkerStatus
-from cws.registry import Registry
-from cws.worker_persistence import WorkerProtocolPersistenceError
-from cws.worker_protocol import (
+from lws.db import SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION
+from lws.models import SupervisorState, WorkerStatus
+from lws.registry import Registry
+from lws.worker_persistence import WorkerProtocolPersistenceError
+from lws.worker_protocol import (
     DecisionCode,
     DurableTaskStatus,
     EventKind,
@@ -17,8 +17,8 @@ from cws.worker_protocol import (
 )
 
 
-URL_A = "https://chatgpt.com/c/worker-a"
-URL_B = "https://chatgpt.com/c/worker-b"
+URL_A = "https://web.example/c/worker-a"
+URL_B = "https://web.example/c/worker-b"
 
 
 def logical_snapshot(registry: Registry, task_id: str):
@@ -59,7 +59,7 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
                 """INSERT INTO tasks
                    (task_id, project, objective, cwd, state, checkpoint_json,
                     current_worker_id, created_at, updated_at)
-                   VALUES ('legacy', 'cws', 'persist me', '.', 'QUEUED', '{}', 'w1', 1, 2)"""
+                   VALUES ('legacy', 'lws', 'persist me', '.', 'QUEUED', '{}', 'w1', 1, 2)"""
             )
             raw.execute(
                 """INSERT INTO workers
@@ -100,7 +100,7 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
                    (capability_id, kind, scope_host, browser_family, browser_major,
                     platform, surface, isolation_mode, evaluator_version, evidence_digest,
                     source_experiment_id, observed_at, recorded_at, expires_at, payload_json)
-                   VALUES ('cap1', 'page_close_generation', 'chatgpt.com', 'chromium', 151,
+                   VALUES ('cap1', 'page_close_generation', 'web.example', 'chromium', 151,
                            'windows', 'web', 'dedicated_profile', 'v1', 'digest', 'exp1',
                            1, 2, 999, '{}')"""
             )
@@ -115,9 +115,9 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(SCHEMA_VERSION, 8)
+                self.assertEqual(SCHEMA_VERSION, 9)
                 self.assertEqual(
-                    registry._conn.execute("PRAGMA user_version").fetchone()[0], 8
+                    registry._conn.execute("PRAGMA user_version").fetchone()[0], 9
                 )
                 for table in (
                     "worker_protocol_tasks",
@@ -188,7 +188,7 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
                 """INSERT INTO tasks
                    (task_id, project, objective, cwd, state, checkpoint_json,
                     created_at, updated_at)
-                   VALUES ('root', 'cws', 'keep v6', '.', 'QUEUED', '{}', 1, 2)"""
+                   VALUES ('root', 'lws', 'keep v6', '.', 'QUEUED', '{}', 1, 2)"""
             )
             raw.execute(
                 """INSERT INTO worker_protocol_tasks
@@ -200,7 +200,7 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(registry._conn.execute("PRAGMA user_version").fetchone()[0], 8)
+                self.assertEqual(registry._conn.execute("PRAGMA user_version").fetchone()[0], 9)
                 self.assertEqual(registry.get_task("root").objective, "keep v6")
                 self.assertEqual(
                     registry.load_worker_protocol("root").lineage.root_task_id, "root"
@@ -217,10 +217,10 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "future.sqlite3"
             raw = sqlite3.connect(db)
-            raw.execute("PRAGMA user_version = 9")
+            raw.execute("PRAGMA user_version = 10")
             raw.commit()
             raw.close()
-            with self.assertRaisesRegex(RuntimeError, "unsupported CWS registry schema"):
+            with self.assertRaisesRegex(RuntimeError, "unsupported LWS registry schema"):
                 Registry(db)
 
 
@@ -237,7 +237,7 @@ class WorkerProtocolPersistenceTests(unittest.TestCase):
     def register_task(self, task_id="t1", *, conversation_url=None):
         return self.registry.register_task(
             task_id=task_id,
-            project="cws",
+            project="lws",
             objective="worker protocol persistence",
             cwd=".",
             conversation_url=conversation_url,

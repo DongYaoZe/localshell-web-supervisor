@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import replace
 
-from cws.worker_protocol import (
+from lws.worker_protocol import (
     DecisionCode,
     DurableTaskStatus,
     EventKind,

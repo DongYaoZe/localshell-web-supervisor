@@ -1,14 +1,14 @@
 import unittest
 
-from cws.models import (
+from lws.models import (
     BrowserObservation,
     LsmObservation,
     NetworkObservation,
     SupervisorState,
     TaskRecord,
 )
-from cws.recovery import recommend
-from cws.watcher import WatchPolicy, assess
+from lws.recovery import recommend
+from lws.watcher import WatchPolicy, assess
 
 
 NOW = 10_000.0
@@ -55,7 +55,7 @@ def network(**kw):
         source="cdp",
         sample_started_at=NOW - 2,
         sample_ended_at=NOW,
-        page_url="https://chatgpt.com/c/x",
+        page_url="https://web.example/c/x",
         event_count=0,
         request_count=0,
         response_count=0,

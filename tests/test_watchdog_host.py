@@ -4,8 +4,8 @@ import time
 import unittest
 from pathlib import Path
 
-from cws.registry import Registry
-from cws.watchdog_host import (
+from lws.registry import Registry
+from lws.watchdog_host import (
     build_watchdog_command,
     inspect_watchdog_host,
     launch_detached_watchdog,
@@ -29,13 +29,13 @@ class WatchdogHostTests(unittest.TestCase):
     def test_command_is_repo_python_module_not_lsm_job(self):
         command = build_watchdog_command(
             python_executable="python",
-            db_path="C:/repo/.cws/registry.sqlite3",
+            db_path="C:/repo/.lws/registry.sqlite3",
             interval_s=30,
             use_uia=True,
             lsm_state_dir="C:/lsm/state",
             git_bin="C:/git.exe",
         )
-        self.assertEqual(command[:3], ["python", "-m", "cws"])
+        self.assertEqual(command[:3], ["python", "-m", "lws"])
         self.assertIn("watch", command)
         self.assertIn("--uia", command)
         self.assertNotIn("job_start", " ".join(command))
@@ -43,7 +43,7 @@ class WatchdogHostTests(unittest.TestCase):
     def test_timeout_autorecovery_command_is_explicit_and_forces_uia(self):
         command = build_watchdog_command(
             python_executable="python",
-            db_path="C:/repo/.cws/registry.sqlite3",
+            db_path="C:/repo/.lws/registry.sqlite3",
             interval_s=30,
             use_uia=False,
             auto_recover_timeouts=True,

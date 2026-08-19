@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.models import LsmObservation, SupervisorState, TaskRecord, WorkspaceObservation
-from cws.recovery import recommend
-from cws.watcher import assess
-from cws.workspace import WorkspaceProbe, detect_git_bin
+from lws.models import LsmObservation, SupervisorState, TaskRecord, WorkspaceObservation
+from lws.recovery import recommend
+from lws.watcher import assess
+from lws.workspace import WorkspaceProbe, detect_git_bin
 
 
 class WorkspaceProbeTests(unittest.TestCase):
@@ -32,9 +32,9 @@ class WorkspaceProbeTests(unittest.TestCase):
                     "-C",
                     str(root),
                     "-c",
-                    "user.name=CWS Test",
+                    "user.name=LWS Test",
                     "-c",
-                    "user.email=cws-test@example.invalid",
+                    "user.email=lws-test@example.invalid",
                     "commit",
                     "-m",
                     "initial",

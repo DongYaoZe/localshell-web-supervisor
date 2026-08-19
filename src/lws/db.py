@@ -1,0 +1,325 @@
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+SCHEMA_VERSION = 9
+
+# Kept as a named baseline so migration tests can construct a real schema-v5 database.
+SCHEMA_V5 = r"""
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    state TEXT NOT NULL,
+    lsm_session_id TEXT,
+    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+    current_worker_id TEXT,
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    max_recovery_attempts INTEGER NOT NULL DEFAULT 3,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workers (
+    worker_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    conversation_url TEXT NOT NULL,
+    conversation_id TEXT,
+    status TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    last_seen_at REAL,
+    ended_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_workers_task ON workers(task_id);
+CREATE TABLE IF NOT EXISTS task_jobs (
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL,
+    PRIMARY KEY (task_id, job_id)
+);
+CREATE TABLE IF NOT EXISTS browser_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    observed_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_browser_obs_worker_time
+    ON browser_observations(worker_id, observed_at DESC);
+CREATE TABLE IF NOT EXISTS network_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    observed_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_network_obs_worker_time
+    ON network_observations(worker_id, observed_at DESC);
+CREATE TABLE IF NOT EXISTS lsm_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    observed_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lsm_obs_task_time
+    ON lsm_observations(task_id, observed_at DESC);
+CREATE TABLE IF NOT EXISTS workspace_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    observed_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_obs_task_time
+    ON workspace_observations(task_id, observed_at DESC);
+CREATE TABLE IF NOT EXISTS reconciliation_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reconcile_id TEXT NOT NULL UNIQUE,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    state TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    fence_token TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_task_time
+    ON reconciliation_records(task_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS recovery_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    action TEXT NOT NULL,
+    safe_to_dispatch INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS watchdog_leases (
+    name TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    host TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    heartbeat_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS action_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_attempts_task_time
+    ON action_attempts(task_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_action_attempts_one_unresolved
+    ON action_attempts(task_id)
+    WHERE state IN ('ARMED', 'SUBMITTED', 'RECONCILE_REQUIRED');
+CREATE TABLE IF NOT EXISTS worker_window_bindings (
+    worker_id TEXT PRIMARY KEY REFERENCES workers(worker_id) ON DELETE CASCADE,
+    window_handle INTEGER NOT NULL,
+    browser_pid INTEGER NOT NULL,
+    chrome_executable TEXT NOT NULL,
+    conversation_url TEXT NOT NULL,
+    source TEXT NOT NULL,
+    bound_at REAL NOT NULL,
+    observed_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_worker_window_bindings_expires
+    ON worker_window_bindings(expires_at);
+CREATE TABLE IF NOT EXISTS probe_window_slots (
+    slot_id TEXT PRIMARY KEY,
+    owner_token TEXT NOT NULL,
+    target_worker_id TEXT NOT NULL,
+    target_conversation_url TEXT NOT NULL,
+    actual_url TEXT NOT NULL,
+    window_handle INTEGER NOT NULL,
+    browser_pid INTEGER NOT NULL,
+    chrome_executable TEXT NOT NULL,
+    source TEXT NOT NULL,
+    bound_at REAL NOT NULL,
+    observed_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_window_slots_expires
+    ON probe_window_slots(expires_at);
+CREATE TABLE IF NOT EXISTS probe_mutation_operations (
+    operation_id TEXT PRIMARY KEY,
+    nonce TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    slot_id TEXT NOT NULL,
+    target_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    target_worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_mutation_operations_time
+    ON probe_mutation_operations(created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_mutation_one_unresolved
+    ON probe_mutation_operations((1))
+    WHERE state IN ('ARMED', 'CLOSE_SUBMITTED', 'READY_TO_OPEN',
+                    'OPEN_SUBMITTED', 'RECONCILE_REQUIRED');
+CREATE TABLE IF NOT EXISTS page_capabilities (
+    capability_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    scope_host TEXT NOT NULL,
+    browser_family TEXT NOT NULL,
+    browser_major INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    isolation_mode TEXT NOT NULL,
+    evaluator_version TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    source_experiment_id TEXT NOT NULL,
+    observed_at REAL NOT NULL,
+    recorded_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_page_capabilities_kind_expires
+    ON page_capabilities(kind, expires_at DESC);
+"""
+
+SCHEMA_V6 = r"""
+CREATE TABLE IF NOT EXISTS worker_protocol_tasks (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    task_status TEXT NOT NULL,
+    current_worker_id TEXT REFERENCES workers(worker_id) ON DELETE RESTRICT,
+    handoff_target_worker_id TEXT REFERENCES workers(worker_id) ON DELETE RESTRICT,
+    handoff_requested_at REAL,
+    parent_task_id TEXT REFERENCES tasks(task_id) ON DELETE RESTRICT,
+    root_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE RESTRICT,
+    child_key TEXT,
+    completed_at REAL,
+    completion_ref TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_parent
+    ON worker_protocol_tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_root
+    ON worker_protocol_tasks(root_task_id);
+CREATE TABLE IF NOT EXISTS worker_protocol_leases (
+    worker_id TEXT PRIMARY KEY REFERENCES workers(worker_id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    conversation_ref TEXT NOT NULL,
+    status TEXT NOT NULL,
+    registered_at REAL NOT NULL,
+    generation INTEGER,
+    claimed_at REAL,
+    last_heartbeat_at REAL,
+    lease_expires_at REAL,
+    ended_at REAL,
+    superseded_by TEXT REFERENCES workers(worker_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_leases_task
+    ON worker_protocol_leases(task_id);
+CREATE TABLE IF NOT EXISTS worker_protocol_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    event_index INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    at REAL NOT NULL,
+    worker_id TEXT,
+    generation INTEGER,
+    related_worker_id TEXT,
+    ref TEXT,
+    UNIQUE(task_id, revision, event_index)
+);
+CREATE INDEX IF NOT EXISTS idx_worker_protocol_events_task_revision
+    ON worker_protocol_events(task_id, revision, event_index);
+"""
+
+SCHEMA_V7 = r"""
+CREATE TABLE IF NOT EXISTS child_dispatches (
+    dispatch_id TEXT PRIMARY KEY,
+    parent_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE RESTRICT,
+    child_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id) ON DELETE CASCADE,
+    child_key TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    prompt_sha256 TEXT NOT NULL,
+    expected_branch TEXT,
+    base_ref TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(parent_task_id, child_key)
+);
+CREATE INDEX IF NOT EXISTS idx_child_dispatches_parent_time
+    ON child_dispatches(parent_task_id, created_at, dispatch_id);
+CREATE TABLE IF NOT EXISTS replacement_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    candidate_worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE RESTRICT,
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_replacement_attempts_task_time
+    ON replacement_attempts(task_id, created_at DESC, attempt_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_replacement_attempts_one_unresolved
+    ON replacement_attempts(task_id)
+    WHERE state IN ('ARMED', 'LSM_TAKEOVER_SUBMITTED', 'RECONCILE_REQUIRED');
+"""
+
+SCHEMA_V8 = r"""
+CREATE TABLE IF NOT EXISTS child_spawn_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    child_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_child_spawn_attempts_task_time
+    ON child_spawn_attempts(child_task_id, created_at DESC, attempt_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_child_spawn_attempts_one_unresolved
+    ON child_spawn_attempts(child_task_id)
+    WHERE state IN ('ARMED', 'WINDOW_OPEN_SUBMITTED', 'WINDOW_BOUND',
+                    'PROMPT_SUBMITTED', 'RECONCILE_REQUIRED');
+"""
+
+SCHEMA_V9 = r"""
+-- v9 is an additive identity/privacy migration. Existing v8 registries may still
+-- contain a legacy provider-named project URL column; connect() copies it into
+-- web_project_url when present.
+"""
+
+SCHEMA = SCHEMA_V5 + SCHEMA_V6 + SCHEMA_V7 + SCHEMA_V8 + SCHEMA_V9
+
+
+def connect(path: str | Path) -> sqlite3.Connection:
+    db_path = Path(path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 3000")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version < 0 or version > SCHEMA_VERSION:
+        conn.close()
+        raise RuntimeError(
+            f"unsupported LWS registry schema version {version}; expected <= {SCHEMA_VERSION}"
+        )
+    conn.executescript(SCHEMA)
+    child_dispatch_columns = {
+        str(row["name"]) for row in conn.execute("PRAGMA table_info(child_dispatches)").fetchall()
+    }
+    if "web_project_url" not in child_dispatch_columns:
+        conn.execute("ALTER TABLE child_dispatches ADD COLUMN web_project_url TEXT")
+        child_dispatch_columns.add("web_project_url")
+    legacy_column = "chatgpt_" + "project_url"
+    if legacy_column in child_dispatch_columns:
+        conn.execute(
+            f"UPDATE child_dispatches SET web_project_url = {legacy_column} "
+            "WHERE web_project_url IS NULL AND " + legacy_column + " IS NOT NULL"
+        )
+    if version < SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        conn.commit()
+    return conn

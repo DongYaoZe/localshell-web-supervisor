@@ -1,184 +1,241 @@
-# chatgpt-web-supervisor
+# LocalShell Web Supervisor (LWS)
 
-`chatgpt-web-supervisor` (CWS) is a local control plane for long-running work performed through **ChatGPT Web + Local Shell MCP**.
+**LocalShell Web Supervisor** is a local reliability and orchestration layer for long-running browser-driven agents that use [Local Shell MCP](https://github.com/fwerkor/local-shell-mcp) for durable local execution.
 
-The central rule is:
+The central rule is simple:
 
-> **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
+> **A web conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.10 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, crash-fenced browser/action intents, exact-window leases, versioned page-continuity capabilities, deterministic orchestration, a persisted generation-fenced replaceable-worker protocol, and a schema-v8 parent/child scheduler. In addition to 0.9's opt-in same-worker timeout recovery, 0.10 can persist child assignments, explicitly create one initial CWS-owned child conversation inside a confirmed ChatGPT Project, bind the child's Local Shell logical session, track durable completion, and perform guarded replacement-worker takeover using supported Local Shell MCP semantics. General unattended dispatch, automatic replacement-chat creation, and automatic live-page closing remain disabled.
+A browser turn, a Local Shell tool call, and the actual Git/workspace state can fail or finish independently. LWS keeps those truth domains separate so a stalled or interrupted web turn does not automatically cause a duplicate commit, write, upload, or retry.
 
-## Why
+## What LWS does
 
-Long ChatGPT Web turns can fail independently of local side effects. A tool may have completed while the page still shows an `ing` card; the composer can become usable while delivery is broken; a `Message delivery timed out` error can appear after local mutations already happened. Blindly replaying the prior turn can therefore duplicate commits, writes, uploads, or other side effects.
+LWS provides a fail-closed control plane around browser-based agent work:
 
-CWS separates three truth domains:
+- durable SQLite task and worker registry;
+- Local Shell MCP logical-session, Goal, in-flight-call, continuation, and tracked-job reconciliation;
+- read-only workspace/Git observation;
+- browser/DOM observation and exact-window Windows UI Automation fencing;
+- optional CDP network-lifecycle evidence without retaining headers, cookies, request bodies, or response bodies;
+- deterministic health/stall classification across browser, Local Shell, and workspace evidence;
+- write-ahead recovery actions with replay suppression;
+- worker generations, leases, handoff, takeover, supersession, and durable completion;
+- parent/child task scheduling with persisted prompts and worktree metadata;
+- explicitly gated initial child-conversation creation in a confirmed web project;
+- guarded replacement-worker takeover coordinated with supported Local Shell MCP session takeover;
+- low-noise resident watchdog support for narrowly recognized delivery failures;
+- browser-memory and active/park/probe planning.
 
-1. **ChatGPT UI/DOM** — what the page currently renders.
-2. **ChatGPT transport activity** — optional V1 CDP/network lifecycle evidence when CWS safely owns or is explicitly allowed to observe a DevTools endpoint.
-3. **Local Shell MCP durable execution state** — logical sessions, Goal plans, in-flight tool leases, tracked jobs, and workspace checkpoints.
+LWS is deliberately conservative. Unknown external outcomes are reconciled, not replayed.
 
-Completion and recovery decisions are never based on the Send/Stop button alone.
+## Provider boundary
 
-## Current 0.10 control plane
+The task, Local Shell, Git, worker-protocol, scheduler, and recovery layers are provider-neutral. The current browser adapter is tested against `chatgpt.com` in normal Chrome and therefore contains a small amount of provider-specific URL and accessibility logic.
 
-The 0.10 control plane remains fail-closed and conservative:
+That adapter does **not** reconstruct private service endpoints, copy authentication material, or use browser cookies/tokens as an execution API. Provider-specific browser behavior is treated as an observation/mutation adapter behind the durable control plane.
 
-- SQLite task/worker registry;
-- durable task identity independent of conversation URL;
-- direct **read-only** ingestion of Local Shell MCP file-state sessions/plans/jobs;
-- read-only workspace reconciliation (cwd, Git HEAD, dirty/status digest);
-- DOM observation and LSM browser-snapshot normalization boundary;
-- exact-URL Windows UI Automation observation of existing authenticated Chrome windows, with ambiguity rejected unless an exact HWND is bound;
-- optional CDP Network-domain lifecycle telemetry that stores no headers, cookies, POST data, or response bodies;
-- three-signal stall classification across browser/DOM, optional network lifecycle, and durable LSM state;
-- durable sanitized reconciliation records with deterministic evidence `fence_token`s;
-- system/aggregate Chrome RAM telemetry and conservative active/park/probe planning;
-- mandatory two-sample semantic-fence dispatch planning;
-- durable write-ahead action attempts (`ARMED`, `SUBMITTED`, `RECONCILE_REQUIRED`, `ACKNOWLEDGED`, `FAILED`, `CANCELLED`);
-- SQLite schema v8: schema-v6 durable worker-protocol state plus child dispatch contracts, write-ahead replacement attempts, explicit ChatGPT Project binding, and write-ahead child-spawn attempts;
-- an audited `dispatch-plan` command that remains dry-run by default;
-- an explicit one-shot `dispatch-execute` path that requires a candidate-ready two-sample fence, exact task confirmation, a fresh exact-window lease, no unresolved action, available recovery budget, and per-invocation UIA opt-in;
-- `action-reconcile-uia` can release the action lock only from a completed exact single-turn nonce/hash acknowledgement;
-- a reusable probe-slot planner that reuses the same owned slot for the same target, rotates only by exact-close-before-open for another target, and blocks on stale or ambiguous ownership rather than opening another window;
-- crash-fenced probe mutation reconciliation that persists authority before close/open, adopts only one exact proven CWS-owned replacement after a crash, and blocks on multiple/changed/unknown window evidence;
-- durable page-continuity capabilities bound to evaluator version, site, browser family/major, platform, observation surface, experiment time, and expiry; capability use remains explicit;
-- deterministic multi-task orchestration policy for observe/reconcile/recommend/wait/human decisions with fairness, cooldown, recovery-budget, LSM/workspace, exact-window, and capability gates; it never grants mutation authority;
-- a revision/generation-fenced worker-lease protocol for registration, heartbeat, handoff, takeover, supersession, abandonment, completion, and parent/child task lineage, persisted atomically with revision compare-and-swap;
-- durable `child-create` / `child-status` / `child-bind-session` / `child-complete` scheduling primitives, with prompts and expected worktree/branch metadata persisted before a child conversation exists;
-- an explicitly gated **initial** `child-spawn` path that opens one CWS-tagged normal-Chrome project window, binds exact HWND/PID/executable ownership, write-ahead fences the prompt send, and accepts only a resulting conversation in the same stable ChatGPT Project id;
-- guarded replacement attempts that write-ahead the Local Shell MCP takeover boundary before the parent AI makes exactly one supported `session_manage(..., takeover=true)` call, then publish a new CWS generation only after fresh LSM/workspace reconciliation;
-- deterministic health classifier;
-- low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
-- opt-in `--auto-recover-timeouts` mode for recognized delivery errors only: it refreshes the exact current window, reconciles LSM/Git, requires two stable semantic samples, honors the action lock/recovery budget/cooldown, sends at most one fenced current-worker continuation per cycle, and waits for positive nonce/hash ACK before another send;
-- independent detached watchdog start/status plus cooperative lease-based stop, without relying on LSM process-tree kill semantics;
-- strict, separate evidence gates for generation/page continuity and live-LSM-tool continuity across close/reopen; both passed isolated authenticated experiments, including one tracked LSM job that was `running` at close and later `succeeded`;
-- a gated exact-window UIA sender plus hash/nonce-only acknowledgement observer with real isolated `ARMED → SUBMITTED → ACKNOWLEDGED` acceptance evidence;
-- conservative recovery recommendation and idempotent recovery prompt;
-- **no general unattended child dispatcher, no automatic replacement-conversation creation, and no automatic live-worker page close yet**.
+## Safety model
 
-### Quick start
+LWS is reliability infrastructure for work the user already authorized. It is not an authentication bypass or a private web-client implementation.
+
+Core invariants:
+
+- never infer completion from a Send/Stop button alone;
+- never treat `continue` or resend as idempotent;
+- reconcile Local Shell state and actual workspace/Git state before recovery;
+- bind browser mutation to exact task/worker/window identity;
+- persist mutation authority before an external side effect;
+- if an open/send/takeover result is ambiguous, reconcile instead of replaying it;
+- never inspect, copy, or move credentials, cookies, tokens, passwords, or session secrets;
+- never click or type in unrelated browser tabs;
+- automatic replacement-conversation creation and automatic live-worker page eviction remain disabled.
+
+See [`docs/SAFETY.md`](docs/SAFETY.md) for the detailed contract.
+
+## Installation
+
+LWS requires Python 3.11+.
+
+```powershell
+python -m pip install -e .
+lws --version
+```
+
+For source-tree development without installation:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m cws --help
+python -m lws --help
+```
 
-python -m cws register `
+The local registry defaults to `.lws/registry.sqlite3` and is ignored by Git. Override it with `--db` or `LWS_DB`.
+
+## Basic task registration
+
+```powershell
+lws register `
   --task-id example `
   --project demo `
   --objective "finish the demo safely" `
   --cwd D:\work\demo `
-  --session-id s_abc123 `
+  --session-id s_example `
   --conversation-url https://chatgpt.com/c/example
 
-python -m cws status
-python -m cws inspect example --uia
-python -m cws watch --once
-python -m cws reconcile example --uia
-python -m cws recommend example --uia
-python -m cws ram-status
-python -m cws pool-plan
-python -m cws capability-import --file .cws\page-close-evidence.json --json
-python -m cws capability-status --json
-python -m cws pool-plan --page-close-capability latest
-python -m cws action-status example
-python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
-python -m cws dispatch-plan example --uia
-# Explicit one-shot recovery only after a candidate-ready dry run:
-python -m cws dispatch-execute example --confirm-task example --enable-experimental-uia
-python -m cws watchdog-status
-# Optional resident recovery for recognized delivery-timeout errors on registered tasks:
-python -m cws watchdog-start --auto-recover-timeouts
+lws inspect example --uia
+lws reconcile example --uia
+lws recommend example --uia
 ```
 
-For parent-AI child scheduling, including manual adoption, explicit initial child-spawn,
-durable Local Shell session binding, completion references, and replacement takeover, see
-[`docs/CHILD_SCHEDULER.md`](docs/CHILD_SCHEDULER.md). Browser mutation remains split into
-separate write-ahead `arm` / explicit `open` / explicit `send` phases; an ambiguous result is
-reconciled rather than replayed.
+The conversation URL is worker metadata. The durable Local Shell logical session and the real workspace are the execution truth.
 
-For browser telemetry, `cws observe-dom` ingests the transport-neutral V0 probe shape and
-`cws observe-snapshot` can consume an LSM high-level browser snapshot. CWS does not trust
-a truncated LSM body-text prefix as a latest-message heartbeat; long-conversation probes
-must provide a DOM tail or latest-message digest.
+## Parent/child scheduling
 
-On Windows PowerShell 5.1, prefer JSON `--file` inputs for `checkpoint`, `observe-dom`,
-and `observe-snapshot` over inline `--json`, because native-command quoting can strip
-JSON quotes. File input accepts both ordinary UTF-8 and PowerShell 5.1's BOM-prefixed
-UTF-8 output.
+Persist a child assignment before opening or adopting a browser conversation:
 
-The registry defaults to `.cws/registry.sqlite3`. Override with `--db` or `CWS_DB`.
-Local Shell state is detected from `CWS_LSM_STATE_DIR`, `LOCAL_SHELL_MCP_STATE_DIR`, or the hardened Windows deployment path when present. `--lsm-state-dir` always wins.
+```powershell
+lws child-create PARENT_TASK `
+  --child-key worker-a `
+  --child-task-id CHILD_TASK `
+  --project demo `
+  --objective "implement isolated feature A" `
+  --cwd D:\worktrees\feature-a `
+  --expected-branch agent/feature-a `
+  --base-ref ABC123 `
+  --web-project-url https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef `
+  --prompt-file .lws\prompts\feature-a.txt `
+  --json
+```
 
-`cws watch` is the foreground resident loop. For independent hosting, use `cws watchdog-start`, `cws watchdog-status`, and `cws watchdog-stop`. The detached host still runs the same watcher and SQLite singleton lease. `watchdog-start --auto-recover-timeouts` is an explicit opt-in that also enables exact-window UIA and only handles recognized delivery errors for already registered tasks; it does not create replacement conversations or close live pages. Stop is cooperative: it steals the lease into a short-lived `stop:` fence so the old watcher exits on its next failed heartbeat while a replacement remains blocked. No process-tree kill is required.
+`child-create` performs no browser, Local Shell, or Git mutation.
 
-The V0 file adapter is deliberately **schema-version gated**. It currently understands
-the inspected v4.0.1 file backend (`session version=1`, `jobs version=2`). If LSM changes
-those durable formats, CWS fails closed rather than silently making a recovery decision
-from a schema it does not understand. See [`docs/LSM_FINDINGS.md`](docs/LSM_FINDINGS.md).
+For an existing child conversation:
 
-## Local Shell MCP findings from the bootstrap environment
+```powershell
+lws child-adopt CHILD_TASK --conversation-url https://chatgpt.com/g/g-p-.../c/... --json
+```
 
-The initial implementation was grounded against Local Shell MCP **v4.0.1**, not a guessed API surface:
+For explicitly gated initial child creation:
 
-- logical sessions and Goal plans are durable JSON state;
-- Goal mode has a 900 s inactivity/execution lease and at most 10 continuation attempts;
-- each tool call gets a durable per-run in-flight lease before execution; failure to persist that lease is fail-closed;
-- in-flight leases are heartbeat-renewed and fence logical-session takeover;
-- `resume(..., takeover=true)` supersedes an active run only when no tool calls are in flight;
-- tracked jobs have a durable `jobs.json`, attempt log/status files, and interrupted-state reconciliation;
-- persistent shells themselves are **not** durable across server restart;
-- high-level browser sessions are in-memory, limited to 8, idle-cleaned after 1 hour; profiles/storage state are persistent;
-- browser snapshots already retain bounded response/request-failure evidence, but not enough stream lifecycle timing for robust ChatGPT stall detection;
-- in the bootstrap Windows/ConPTY experiment, `job_stop` marked resident test jobs stopped while their PowerShell/Python descendants remained alive, so CWS is fenced by its own watchdog lease and should be hosted independently of an ordinary tracked shell job.
+```powershell
+lws child-spawn-arm CHILD_TASK --json
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/V0_SPEC.md`](docs/V0_SPEC.md).
+lws child-spawn-open SPAWN_ATTEMPT `
+  --enable-normal-browser-mutation `
+  --confirm-child CHILD_TASK `
+  --json
 
-V1 browser/network/reconcile details are in [`docs/V1_SPEC.md`](docs/V1_SPEC.md),
-[`docs/NETWORK_OBSERVABILITY.md`](docs/NETWORK_OBSERVABILITY.md), and
-[`docs/SAFETY.md`](docs/SAFETY.md).
+lws child-spawn-send SPAWN_ATTEMPT `
+  --enable-normal-browser-mutation `
+  --confirm-child CHILD_TASK `
+  --json
+```
 
-The V2 low-memory planner/page-pool layer is documented in
-[`docs/V2_SPEC.md`](docs/V2_SPEC.md). `cws ram-status` reports system/aggregate Chrome
-memory, while `cws pool-plan` produces `DO_NOT_CLOSE` / `PARK_CANDIDATE` advice. The default
-remains fail-closed: `close_allowed` is not enabled by the release version alone. The
-preferred path is to import validated local evidence into a versioned durable capability and
-then explicitly select that capability with `--page-close-capability`; the one-shot
-`--page-close-evidence FILE` path remains for compatibility. The planner itself never closes
-pages, and live LSM work remains `DO_NOT_CLOSE`.
+If either external mutation has an unknown outcome, do **not** rerun it:
 
-V3's private-transport NO-GO decision and deterministic dry-run dispatcher are documented
-in [`docs/V3_DECISION.md`](docs/V3_DECISION.md) and [`docs/V3_SPEC.md`](docs/V3_SPEC.md).
-The 0.6 reusable probe-slot, durable capability, and explicit recovery-execution contracts
-are documented in [`docs/V4_SPEC.md`](docs/V4_SPEC.md). The 0.7 crash-fenced probe mutation
-and advisory worker-protocol boundary is documented in [`docs/V5_SPEC.md`](docs/V5_SPEC.md).
-The 0.8 schema-v6 durable worker protocol and adversarial orchestration closure are documented
-in [`docs/V6_SPEC.md`](docs/V6_SPEC.md). The 0.9 same-worker timeout recovery loop is documented
-in [`docs/AUTOPILOT.md`](docs/AUTOPILOT.md). The 0.10 schema-v7/v8 AI child scheduler,
-replacement boundary, and live acceptance are documented in [`docs/V8_SPEC.md`](docs/V8_SPEC.md)
-and [`docs/CHILD_SCHEDULER.md`](docs/CHILD_SCHEDULER.md).
+```powershell
+lws child-spawn-reconcile SPAWN_ATTEMPT --json
+```
 
-For day-to-day use, see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). `cws doctor` is a
-read-only preflight for registry/LSM schema, RAM, watchdog lease/PID state, unresolved action fences, workspace/task state, and optional exact-URL UIA. It never repairs or changes browser/task state. The write-ahead action protocol is documented in [`docs/ACTIONS.md`](docs/ACTIONS.md), and isolated browser experiments in [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
+A child should bind its Local Shell durable session back to LWS:
 
-## Safety boundary
+```powershell
+lws child-bind-session CHILD_TASK --session-id s_child
+```
 
-CWS never treats `continue` as idempotent. Before recovery execution, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. CWS does not migrate browser sign-in state, bypass access controls, or reconstruct private ChatGPT endpoints. The default watchdog remains advisory; only the explicit `--auto-recover-timeouts` mode may call the fenced current-worker executor, and only for recognized delivery errors. The 0.10 initial child-spawn path is also explicit per operation and requires exact child confirmation plus normal-browser mutation opt-in. Page eviction remains advisory only for live work.
+After independent verification, finish the durable child with a concrete completion reference:
 
-Browser telemetry is also data-minimized: UIA does not read the unsent prompt draft;
-`probe-uia` returns state/signature diagnostics rather than conversation text; persisted
-UIA/LSM snapshot raw metadata is reduced to the numeric/state fields needed by the watchdog.
+```powershell
+lws child-complete CHILD_TASK --completion-ref commit:ABCDEF123456 --json
+lws child-status PARENT_TASK --json
+```
 
-## Roadmap
+See [`docs/CHILD_SCHEDULER.md`](docs/CHILD_SCHEDULER.md) for the complete workflow.
 
-- **V0:** DOM + LSM telemetry + registry + watchdog + recovery recommendations.
-- **V1:** read-only UIA/CDP observability + three-signal classification + durable reconciliation fences. Implemented; recovery dispatch remains disabled.
-- **V2:** low-RAM worker planner, active/probe page-pool primitives, parked-worker bookkeeping, and RAM telemetry. Implemented conservatively; close/reopen evidence exists, but live page eviction remains disabled.
-- **V3:** evidence says no private Web transport is currently needed; semantic two-phase fences + disabled dry-run recovery/takeover planning are implemented.
-- **0.4:** durable write-ahead action/crash fencing, strict page-close evidence evaluation, schema-v2 registry, and independent detached watchdog hosting.
-- **0.5:** authenticated same-profile disposable-window experiments proved generation continuity, one tracked LSM-job continuity across page close/reopen, and the real write-ahead crash window. Exact top-level window identity and the gated UIA sender/ACK module were established.
-- **0.6:** schema-v4 durable capability provenance, at-most-one reusable probe-slot state, nonce-bound recovery prompts, atomic recovery-budget arming, explicit fenced `dispatch-execute`, and positive `action-reconcile-uia` acknowledgement. Default `dispatch-plan` stays dry-run; watchdog auto-dispatch and live-worker auto-close remain disabled.
-- **0.7:** schema-v5 write-ahead probe `OPEN`/`ROTATE`/`CLOSE` operations and deterministic crash reconciliation, advisory fair recovery orchestration, a pure generation-fenced replaceable-worker protocol, transactional page-pool updates, and duplicate-free attention scheduling. Browser mutation remains explicit; watchdog auto-dispatch and live-worker auto-close remain disabled.
-- **0.8:** schema-v6 durable worker protocol persistence with revision-CAS writes and append-only events, restart-safe generation authority, an advisory runtime evidence adapter, operational probe reconciliation, and adversarial closure for duplicate scheduling, global probe fencing, future timestamps, and wall-clock rollback. Same-worker recovery remains explicit in this release; automatic new-chat takeover and live-page auto-close remain disabled.
-- **0.9:** opt-in resident same-worker timeout autopilot for recognized ChatGPT Web delivery errors. It keeps the existing two-sample LSM/workspace/exact-window/action fences, adds ACK-state replay suppression and a recovery cooldown, and performs at most one possible external send per watchdog cycle. Automatic new-chat takeover and live-page auto-close remain disabled.
-- **0.10:** schema-v7/v8 parent/child scheduling with durable prompt/worktree metadata, stable child LSM-session binding, crash-safe child completion, write-ahead replacement attempts, and an explicit initial-child normal-Chrome spawn path with project-id/owner-token/HWND/PID fencing. Live acceptance proved parent Chat -> child Chat -> child Local Shell Goal/session -> durable completion. Automatic replacement-chat creation and live-page auto-close remain disabled.
+## Replacement workers
+
+A missing browser window alone is not enough evidence to replace a worker. Replacement requires fresh Local Shell/workspace evidence and no unresolved external mutation.
+
+The high-level flow is:
+
+```text
+replacement-register
+    -> replacement-arm
+    -> replacement-submit
+    -> one supported Local Shell MCP session takeover
+    -> replacement-complete
+```
+
+The Local Shell takeover call is made exactly once after write-ahead authorization. If its result is lost or ambiguous, the next step is reconciliation, not another takeover call.
+
+## Resident watchdog
+
+The default watchdog is advisory. The optional timeout-recovery mode is intentionally narrow:
+
+```powershell
+lws watchdog-start --auto-recover-timeouts
+lws watchdog-status
+lws watchdog-stop
+```
+
+It only acts after the same worker passes exact-window, Local Shell, workspace, semantic-fence, action-lock, cooldown, and recovery-budget checks.
+
+## Architecture
+
+LWS separates four layers:
+
+```text
+web conversation / browser evidence
+             |
+             v
+      LocalShell Web Supervisor
+      - registry
+      - reconciliation
+      - worker leases/generations
+      - scheduler/replacement
+      - mutation write-ahead logs
+             |
+             +------> Local Shell MCP durable sessions / Goals / jobs
+             |
+             +------> actual workspace / Git state
+```
+
+The failure domains are intentionally independent. Browser UI is evidence, not durable execution state.
+
+Additional design documents:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
+- [`docs/STATE_MACHINE.md`](docs/STATE_MACHINE.md)
+- [`docs/ACTIONS.md`](docs/ACTIONS.md)
+- [`docs/WORKER_PROTOCOL.md`](docs/WORKER_PROTOCOL.md)
+- [`docs/CHILD_SCHEDULER.md`](docs/CHILD_SCHEDULER.md)
+- [`docs/SAFETY.md`](docs/SAFETY.md)
+- [`docs/V9_SPEC.md`](docs/V9_SPEC.md) — public rebrand/schema-v9 notes
+
+Older version-spec documents are retained as design history. The Git history intentionally preserves the project's earlier name and development record.
+
+## Local/private state
+
+`.lws/` is intentionally ignored. It may contain:
+
+- registry databases;
+- browser observations and exact-window bindings;
+- action/replacement/spawn write-ahead records;
+- watchdog logs;
+- local experiment fixtures.
+
+Do not publish `.lws/`, browser profiles, storage-state files, cookies, tokens, session secrets, or machine-specific dumps.
+
+## Development checks
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m pytest -q
+git diff --check
+```
+
+Run a secret/privacy scan before publishing changes.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

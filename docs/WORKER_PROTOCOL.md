@@ -1,8 +1,8 @@
 # Multi-conversation worker lease protocol
 
-This document specifies the pure protocol in `cws.worker_protocol`. It deliberately does not
-create ChatGPT conversations, control browser pages, dispatch recovery, or define a registry
-schema. A ChatGPT conversation is replaceable worker metadata; `task_id` remains the durable
+This document specifies the pure protocol in `lws.worker_protocol`. It deliberately does not
+create web chat conversations, control browser pages, dispatch recovery, or define a registry
+schema. A web chat conversation is replaceable worker metadata; `task_id` remains the durable
 identity.
 
 ## Durable identities and lineage

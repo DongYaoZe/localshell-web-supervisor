@@ -1,6 +1,6 @@
 import unittest
 
-from cws.models import (
+from lws.models import (
     BrowserObservation,
     LsmObservation,
     SupervisorState,
@@ -8,13 +8,13 @@ from cws.models import (
     WorkerRecord,
     WorkerStatus,
 )
-from cws.orchestrator import (
+from lws.orchestrator import (
     BrowserPoolPolicy,
     PageDisposition,
     classify_worker_for_pool,
     plan_browser_pool,
 )
-from cws.ram import BrowserMemoryObservation, SystemMemoryObservation
+from lws.ram import BrowserMemoryObservation, SystemMemoryObservation
 
 
 NOW = 1000.0
@@ -35,7 +35,7 @@ def worker(task_id="t"):
     return WorkerRecord(
         worker_id="w1",
         task_id=task_id,
-        conversation_url="https://chatgpt.com/c/x",
+        conversation_url="https://web.example/c/x",
         conversation_id="x",
         status=WorkerStatus.ACTIVE,
         started_at=1,
@@ -98,7 +98,7 @@ class BrowserPoolTests(unittest.TestCase):
         parked = WorkerRecord(
             worker_id="w1",
             task_id=t.task_id,
-            conversation_url="https://chatgpt.com/c/x",
+            conversation_url="https://web.example/c/x",
             conversation_id="x",
             status=WorkerStatus.PARKED,
             started_at=1,
@@ -191,7 +191,7 @@ class BrowserPoolTests(unittest.TestCase):
             w = WorkerRecord(
                 worker_id=f"w{index}",
                 task_id=t.task_id,
-                conversation_url=f"https://chatgpt.com/c/{index}",
+                conversation_url=f"https://web.example/c/{index}",
                 conversation_id=str(index),
                 status=WorkerStatus.ACTIVE,
                 started_at=1,

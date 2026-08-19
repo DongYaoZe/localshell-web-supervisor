@@ -4,13 +4,13 @@ V2 turns the ~8 GB RAM constraint into an explicit scheduler input. The control 
 
 ## Memory telemetry
 
-`cws ram-status` reads physical memory and aggregate Chrome process working-set information. It does not inspect browser command lines, cookies, credentials, or page bodies for RAM accounting.
+`lws ram-status` reads physical memory and aggregate Chrome process working-set information. It does not inspect browser command lines, cookies, credentials, or page bodies for RAM accounting.
 
 Chrome is multi-process, so the working set of one window process is not treated as the full cost of one tab. Memory pressure changes scheduling advice; it never overrides task-safety fences by itself.
 
 ## Pool planner
 
-`cws pool-plan` combines task/worker state, durable LSM evidence, latest browser observation, and memory pressure.
+`lws pool-plan` combines task/worker state, durable LSM evidence, latest browser observation, and memory pressure.
 
 Default planning targets:
 
@@ -45,7 +45,7 @@ The release does not hard-code page-close capability globally. `pool-plan` defau
 
 Workers already marked `parked`, `superseded`, or `dead` do not count as resident page leases.
 
-`cws worker-status WORKER parked` is bookkeeping for a page independently closed/detached; the command itself does not close a browser.
+`lws worker-status WORKER parked` is bookkeeping for a page independently closed/detached; the command itself does not close a browser.
 
 ## Ephemeral page pool
 
@@ -60,7 +60,7 @@ The pool fails closed on capacity instead of implicitly evicting a page. Schema 
 
 ## Empirical page-close findings
 
-The key question was whether ChatGPT work continues when no page displays the conversation.
+The key question was whether web chat work continues when no page displays the conversation.
 
 ### Ordinary generation
 
@@ -73,7 +73,7 @@ Result: `generation_parking_safe` can be proven by the evidence evaluator and, i
 A separate disposable project conversation started a real Local Shell tracked job. The close harness required both:
 
 - exact target job durably `running`;
-- ChatGPT Stop visible.
+- web chat Stop visible.
 
 It wrote pre-close evidence before closing the only experiment window. While the page was absent, the job completed successfully and wrote its expected ignored marker. Reopening the same conversation showed the model's final post-tool completion response.
 
@@ -82,15 +82,15 @@ Result: `tool_execution_parking_safe` can be proven when the stronger tool field
 Run the evidence gate with:
 
 ```powershell
-python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
+python -m lws evaluate-page-close --file .lws\page-close-evidence.json --json
 ```
 
 The preferred path validates/imports evidence once and then explicitly selects the durable capability:
 
 ```powershell
-python -m cws capability-import --file .cws\page-close-evidence.json --json
-python -m cws capability-status --json
-python -m cws pool-plan --page-close-capability latest --json
+python -m lws capability-import --file .lws\page-close-evidence.json --json
+python -m lws capability-status --json
+python -m lws pool-plan --page-close-capability latest --json
 ```
 
 The one-shot `--page-close-evidence` path remains for compatibility.
@@ -98,8 +98,8 @@ The one-shot `--page-close-evidence` path remains for compatibility.
 For a worker that may have live tool execution:
 
 ```powershell
-python -m cws evaluate-page-close `
-  --file .cws\page-close-evidence.json `
+python -m lws evaluate-page-close `
+  --file .lws\page-close-evidence.json `
   --require-tool `
   --json
 ```
@@ -108,7 +108,7 @@ The two gates are intentionally distinct: ordinary generation evidence never sil
 
 ## Why live workers are still pinned
 
-The experiment proves capability on the inspected deployment, not universal browser/platform semantics forever. Before production automatic live-page parking, CWS still needs a deliberate policy that binds:
+The experiment proves capability on the inspected deployment, not universal browser/platform semantics forever. Before production automatic live-page parking, LWS still needs a deliberate policy that binds:
 
 - exact current worker URL/HWND;
 - an explicitly selected, context-matching, unexpired page-close capability;

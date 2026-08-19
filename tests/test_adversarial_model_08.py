@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from cws.action_runtime import submit_armed_action
-from cws.actions import (
+from lws.action_runtime import submit_armed_action
+from lws.actions import (
     ActionAttempt,
     ActionAttemptState,
     ActionBlocked,
     TransportSubmission,
 )
-from cws.models import (
+from lws.models import (
     Assessment,
     LsmObservation,
     ProbeMutationKind,
@@ -28,18 +28,18 @@ from cws.models import (
     WorkerWindowBinding,
     WorkspaceObservation,
 )
-from cws.orchestration import (
+from lws.orchestration import (
     OrchestrationDecisionKind,
     OrchestrationPolicy,
     TaskOrchestrationInput,
     evaluate_task,
     plan_orchestration,
 )
-from cws.page_runtime import plan_probe_slot, probe_operation_from_plan, tagged_probe_url
-from cws.probe_ops import ProbeMutationObservation, ProbeWindowMatch, decide_probe_reconciliation
-from cws.reconcile import build_reconciliation_record
-from cws.registry import Registry
-from cws.worker_protocol import (
+from lws.page_runtime import plan_probe_slot, probe_operation_from_plan, tagged_probe_url
+from lws.probe_ops import ProbeMutationObservation, ProbeWindowMatch, decide_probe_reconciliation
+from lws.reconcile import build_reconciliation_record
+from lws.registry import Registry
+from lws.worker_protocol import (
     DecisionCode,
     DurableTaskStatus,
     WorkerLeaseStatus,
@@ -62,7 +62,7 @@ URL1 = "https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 URL2 = "https://chatgpt.com/c/ffffffff-1111-2222-3333-444444444444"
 URL3 = "https://chatgpt.com/c/99999999-1111-2222-3333-555555555555"
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-SOURCE = "windows_uia_cws_probe"
+SOURCE = "windows_uia_lws_probe"
 
 
 class CountingTransport:
@@ -125,7 +125,7 @@ def action_attempt(task_id, worker_id, attempt_id="act-1"):
 def register_active_task(registry, *, task_id="t1", url=URL1):
     task = registry.register_task(
         task_id=task_id,
-        project="cws",
+        project="lws",
         objective="adversarial model",
         cwd="C:/repo",
         lsm_session_id=f"s-{task_id}",
@@ -137,7 +137,7 @@ def register_active_task(registry, *, task_id="t1", url=URL1):
 def register_parked_task(registry, *, task_id, url):
     task = registry.register_task(
         task_id=task_id,
-        project="cws",
+        project="lws",
         objective="probe adversarial model",
         cwd="C:/repo",
         conversation_url=url,
@@ -194,7 +194,7 @@ def make_probe_operation(registry, worker, *, now, operation_id, nonce):
 def make_task(task_id="orch", *, checkpoint_head="abc"):
     return TaskRecord(
         task_id=task_id,
-        project="cws",
+        project="lws",
         objective="orchestration adversarial model",
         cwd="C:/repo",
         state=SupervisorState.SUSPECT,

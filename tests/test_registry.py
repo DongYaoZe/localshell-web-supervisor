@@ -2,14 +2,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.models import BrowserObservation, WorkerStatus
-from cws.registry import Registry
+from lws.models import BrowserObservation, WorkerStatus
+from lws.registry import Registry
 
 
 class RegistryTests(unittest.TestCase):
     def test_task_worker_job_and_observation_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:
-            registry = Registry(Path(td) / "cws.sqlite3")
+            registry = Registry(Path(td) / "lws.sqlite3")
             try:
                 task = registry.register_task(
                     task_id="t1",
@@ -17,7 +17,7 @@ class RegistryTests(unittest.TestCase):
                     objective="objective",
                     cwd="C:/repo",
                     lsm_session_id="s1",
-                    conversation_url="https://chatgpt.com/c/abc",
+                    conversation_url="https://web.example/c/abc",
                 )
                 self.assertEqual(task.current_worker_id is not None, True)
                 parked = registry.set_worker_status(task.current_worker_id, WorkerStatus.PARKED)

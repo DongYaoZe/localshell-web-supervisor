@@ -4,16 +4,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cws.action_runtime import submit_armed_action
-from cws.actions import (
+from lws.action_runtime import submit_armed_action
+from lws.actions import (
     ActionAttempt,
     ActionAttemptState,
     ActionIntent,
     ActionTransportDisabled,
 )
-from cws.models import WorkerWindowBinding
-from cws.registry import Registry
-from cws.uia_actions import (
+from lws.models import WorkerWindowBinding
+from lws.registry import Registry
+from lws.uia_actions import (
     ChromeUiaAckObserver,
     ChromeUiaActionTransport,
     UiaAckObservation,
@@ -22,7 +22,7 @@ from cws.uia_actions import (
 
 
 PROMPT = "harmless recovery prompt nonce-123"
-URL = "https://chatgpt.com/c/6a851bdc-6f24-83e8-a229-4262b96eef18"
+URL = "https://chatgpt.com/c/11111111-2222-3333-4444-555555555555"
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
 
@@ -131,7 +131,7 @@ class ChromeUiaActionTransportTests(unittest.TestCase):
             )
 
     def test_action_script_uses_bounded_post_draft_send_poll(self):
-        from cws.uia_actions import _POWERSHELL_ACTION
+        from lws.uia_actions import _POWERSHELL_ACTION
 
         self.assertIn("for ($i = 0; $i -lt 40; $i++)", _POWERSHELL_ACTION)
         self.assertIn("Start-Sleep -Milliseconds 50", _POWERSHELL_ACTION)
@@ -149,9 +149,9 @@ class ChromeUiaActionTransportTests(unittest.TestCase):
         self.assertFalse(result.side_effect_possible)
         self.assertIn("/c/", result.detail)
 
-    @patch("cws.uia_actions.os.name", "nt")
-    @patch("cws.uia_actions._run_powershell_json")
-    @patch("cws.uia_actions.time.time", return_value=200.0)
+    @patch("lws.uia_actions.os.name", "nt")
+    @patch("lws.uia_actions._run_powershell_json")
+    @patch("lws.uia_actions.time.time", return_value=200.0)
     def test_expired_binding_is_proven_no_side_effect(self, _now, run_helper):
         result = self.transport(binding_expires_at=199.0).submit(action_intent())
         self.assertFalse(result.submitted)
@@ -159,8 +159,8 @@ class ChromeUiaActionTransportTests(unittest.TestCase):
         self.assertIn("expired", result.detail)
         run_helper.assert_not_called()
 
-    @patch("cws.uia_actions.os.name", "nt")
-    @patch("cws.uia_actions._run_powershell_json")
+    @patch("lws.uia_actions.os.name", "nt")
+    @patch("lws.uia_actions._run_powershell_json")
     def test_exact_binding_and_prompt_are_passed_out_of_command_line(self, run_helper):
         run_helper.return_value = {
             "submitted": True,
@@ -171,15 +171,15 @@ class ChromeUiaActionTransportTests(unittest.TestCase):
         result = self.transport().submit(action_intent())
         self.assertTrue(result.submitted)
         kwargs = run_helper.call_args.kwargs
-        self.assertEqual(kwargs["env"]["CWS_EXPECTED_URL"], URL)
-        self.assertEqual(kwargs["env"]["CWS_EXPECTED_HWND"], "1234")
-        self.assertEqual(kwargs["env"]["CWS_EXPECTED_BROWSER_PID"], "4244")
-        self.assertEqual(kwargs["env"]["CWS_EXPECTED_CHROME_EXE"], CHROME)
-        self.assertEqual(base64.b64decode(kwargs["env"]["CWS_PROMPT_B64"]).decode(), PROMPT)
+        self.assertEqual(kwargs["env"]["LWS_EXPECTED_URL"], URL)
+        self.assertEqual(kwargs["env"]["LWS_EXPECTED_HWND"], "1234")
+        self.assertEqual(kwargs["env"]["LWS_EXPECTED_BROWSER_PID"], "4244")
+        self.assertEqual(kwargs["env"]["LWS_EXPECTED_CHROME_EXE"], CHROME)
+        self.assertEqual(base64.b64decode(kwargs["env"]["LWS_PROMPT_B64"]).decode(), PROMPT)
         self.assertNotIn(PROMPT, run_helper.call_args.args[0])
 
-    @patch("cws.uia_actions.os.name", "nt")
-    @patch("cws.uia_actions._run_powershell_json")
+    @patch("lws.uia_actions.os.name", "nt")
+    @patch("lws.uia_actions._run_powershell_json")
     def test_post_draft_failure_is_ambiguous_not_retryable(self, run_helper):
         run_helper.return_value = {
             "submitted": False,
@@ -191,8 +191,8 @@ class ChromeUiaActionTransportTests(unittest.TestCase):
         self.assertFalse(result.submitted)
         self.assertTrue(result.side_effect_possible)
 
-    @patch("cws.uia_actions.os.name", "nt")
-    @patch("cws.uia_actions._run_powershell_json")
+    @patch("lws.uia_actions.os.name", "nt")
+    @patch("lws.uia_actions._run_powershell_json")
     def test_runtime_persists_reconcile_required_for_ambiguous_uia_result(self, run_helper):
         run_helper.return_value = {
             "submitted": False,
@@ -211,7 +211,7 @@ class ChromeUiaActionTransportTests(unittest.TestCase):
                     conversation_url=URL,
                 )
                 worker = reg.get_worker(task.current_worker_id)
-                from cws.actions import prompt_digest
+                from lws.actions import prompt_digest
 
                 attempt = ActionAttempt(
                     attempt_id="act1",
@@ -296,12 +296,12 @@ class ChromeUiaAckTests(unittest.TestCase):
         )
         self.assertIsNone(ack)
 
-    @patch("cws.uia_actions.os.name", "nt")
-    @patch("cws.uia_actions._run_powershell_json")
+    @patch("lws.uia_actions.os.name", "nt")
+    @patch("lws.uia_actions._run_powershell_json")
     def test_ack_observer_returns_only_bounded_metadata(self, run_helper):
         run_helper.return_value = {
             "observed_at": 300.0,
-            "url": "chatgpt.com/c/6a851bdc-6f24-83e8-a229-4262b96eef18",
+            "url": "chatgpt.com/c/11111111-2222-3333-4444-555555555555",
             "window_handle": 999,
             "browser_pid": 4244,
             "generating": False,

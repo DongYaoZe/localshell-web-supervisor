@@ -6,16 +6,16 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from cws.cli import main
-from cws.models import ProbeMutationState, WorkerStatus
-from cws.page_runtime import (
+from lws.cli import main
+from lws.models import ProbeMutationState, WorkerStatus
+from lws.page_runtime import (
     PROBE_SLOT_SOURCE,
     plan_probe_slot,
     probe_close_operation,
     probe_operation_from_plan,
     tagged_probe_url,
 )
-from cws.registry import Registry
+from lws.registry import Registry
 
 URL1 = "https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 URL2 = "https://chatgpt.com/c/ffffffff-1111-2222-3333-444444444444"
@@ -114,7 +114,7 @@ class ProbeOperatorCliTests(unittest.TestCase):
 
     @staticmethod
     def _observation_absent(observed_at: float):
-        from cws.probe_ops import ProbeMutationObservation
+        from lws.probe_ops import ProbeMutationObservation
 
         return ProbeMutationObservation(observed_at=observed_at)
 
@@ -155,7 +155,7 @@ class ProbeOperatorCliTests(unittest.TestCase):
         out = io.StringIO()
         err = io.StringIO()
         with (
-            patch("cws.cli.detect_lsm_state_dir", return_value=None),
+            patch("lws.cli.detect_lsm_state_dir", return_value=None),
             redirect_stdout(out),
             redirect_stderr(err),
         ):
@@ -269,8 +269,8 @@ class ProbeOperatorCliTests(unittest.TestCase):
             )
 
             with (
-                patch("cws.cli._refresh_uia") as refresh_uia,
-                patch("cws.page_runtime.ChromeUiaProbeWindowTransport.close_authorized") as close,
+                patch("lws.cli._refresh_uia") as refresh_uia,
+                patch("lws.page_runtime.ChromeUiaProbeWindowTransport.close_authorized") as close,
             ):
                 code, out, err = self._run(
                     db,
@@ -375,8 +375,8 @@ class ProbeOperatorCliTests(unittest.TestCase):
             )
 
             with (
-                patch("cws.cli._refresh_uia") as refresh_uia,
-                patch("cws.page_runtime.ChromeUiaProbeWindowTransport.open_authorized") as mutate,
+                patch("lws.cli._refresh_uia") as refresh_uia,
+                patch("lws.page_runtime.ChromeUiaProbeWindowTransport.open_authorized") as mutate,
             ):
                 code, out, err = self._run(
                     db,
@@ -456,7 +456,7 @@ class ProbeOperatorCliTests(unittest.TestCase):
                 new_matches=[
                     self._new_match(
                         operation,
-                        url="https://chatgpt.com/c/11111111-2222-3333-4444-555555555555#cws-probe=wrong",
+                        url="https://chatgpt.com/c/11111111-2222-3333-4444-555555555555#lws-probe=wrong",
                     )
                 ],
             )
@@ -490,7 +490,7 @@ class ProbeOperatorCliTests(unittest.TestCase):
             registry = Registry(db)
             try:
                 _worker, operation = self._open_operation(registry, submitted=True)
-                from cws.probe_ops import ProbeMutationObservation, ProbeWindowMatch
+                from lws.probe_ops import ProbeMutationObservation, ProbeWindowMatch
 
                 registry.reconcile_probe_mutation_operation(
                     operation.operation_id,

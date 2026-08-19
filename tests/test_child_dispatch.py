@@ -3,12 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.registry import Registry
-from cws.worker_protocol import DurableTaskStatus, WorkerLeaseStatus
+from lws.registry import Registry
+from lws.worker_protocol import DurableTaskStatus, WorkerLeaseStatus
 
 
-URL_A = "https://chatgpt.com/g/project/c/child-a"
-URL_B = "https://chatgpt.com/g/project/c/child-b"
+URL_A = "https://web.example/g/project/c/child-a"
+URL_B = "https://web.example/g/project/c/child-b"
 
 
 class ChildDispatchTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class ChildDispatchTests(unittest.TestCase):
         self.registry = Registry(self.db)
         self.registry.register_task(
             task_id="parent",
-            project="cws",
+            project="lws",
             objective="parent orchestration",
             cwd="D:/repo",
         )
@@ -31,7 +31,7 @@ class ChildDispatchTests(unittest.TestCase):
         values = {
             "child_key": "worker-a",
             "child_task_id": "child-a",
-            "project": "cws",
+            "project": "lws",
             "objective": "implement isolated feature A",
             "cwd": "D:/repo-wt-a",
             "prompt_text": "Read bootstrap, implement feature A, test, commit.",

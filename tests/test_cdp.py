@@ -1,6 +1,6 @@
 import unittest
 
-from cws.cdp import (
+from lws.cdp import (
     CdpNetworkProbe,
     CdpProbeUnavailable,
     _validate_endpoint,

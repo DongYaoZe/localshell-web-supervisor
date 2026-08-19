@@ -3,7 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from cws.models import (
+from lws.models import (
     Assessment,
     BrowserObservation,
     LsmObservation,
@@ -12,8 +12,8 @@ from cws.models import (
     TaskRecord,
     WorkspaceObservation,
 )
-from cws.reconcile import build_reconciliation_record, fence_matches
-from cws.registry import Registry
+from lws.reconcile import build_reconciliation_record, fence_matches
+from lws.registry import Registry
 
 
 NOW = 1000.0
@@ -50,7 +50,7 @@ def make_browser(signature="sig1", observed_at=NOW):
     return BrowserObservation(
         worker_id="w1",
         observed_at=observed_at,
-        url="https://chatgpt.com/c/x",
+        url="https://web.example/c/x",
         generating=False,
         send_button_ready=True,
         pending_tool_calls=1,
@@ -68,7 +68,7 @@ def make_network(quiet_since=NOW - 30, observed_at=NOW):
         source="cdp",
         sample_started_at=NOW - 2,
         sample_ended_at=NOW,
-        page_url="https://chatgpt.com/c/x",
+        page_url="https://web.example/c/x",
         event_count=0,
         last_activity_at=NOW - 30,
         quiet_since_at=quiet_since,
@@ -218,7 +218,7 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_registry_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:
-            registry = Registry(Path(td) / "cws.sqlite3")
+            registry = Registry(Path(td) / "lws.sqlite3")
             try:
                 registry.register_task(
                     task_id="t1",
@@ -226,7 +226,7 @@ class ReconciliationTests(unittest.TestCase):
                     objective="obj",
                     cwd="C:/repo",
                     lsm_session_id="s1",
-                    conversation_url="https://chatgpt.com/c/x",
+                    conversation_url="https://web.example/c/x",
                 )
                 task = registry.get_task("t1")
                 record = build_reconciliation_record(

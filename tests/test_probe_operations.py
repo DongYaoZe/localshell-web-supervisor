@@ -3,26 +3,26 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cws.db import SCHEMA_VERSION
-from cws.models import ProbeMutationState, ProbeWindowSlotBinding, WorkerStatus
-from cws.page_runtime import (
+from lws.db import SCHEMA_VERSION
+from lws.models import ProbeMutationState, ProbeWindowSlotBinding, WorkerStatus
+from lws.page_runtime import (
     plan_probe_slot,
     probe_close_operation,
     probe_operation_from_plan,
     tagged_probe_url,
 )
-from cws.probe_ops import (
+from lws.probe_ops import (
     ProbeMutationObservation,
     ProbeReconcileOutcome,
     ProbeWindowMatch,
     decide_probe_reconciliation,
 )
-from cws.registry import Registry
+from lws.registry import Registry
 
 URL1 = "https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 URL2 = "https://chatgpt.com/c/ffffffff-1111-2222-3333-444444444444"
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-SOURCE = "windows_uia_cws_probe"
+SOURCE = "windows_uia_lws_probe"
 
 
 def exact_match(slot: ProbeWindowSlotBinding) -> ProbeWindowMatch:
@@ -50,7 +50,7 @@ class ProbeMutationRegistryTests(unittest.TestCase):
     def _register_parked(self, registry: Registry, *, task_id: str, url: str):
         task = registry.register_task(
             task_id=task_id,
-            project="cws",
+            project="lws",
             objective="probe test",
             cwd=".",
             conversation_url=url,
@@ -125,7 +125,7 @@ class ProbeMutationRegistryTests(unittest.TestCase):
                     expires_at REAL NOT NULL
                 );
                 INSERT INTO tasks VALUES(
-                    't','cws','o','.', 'QUEUED',NULL,'{}','w',0,3,1,1
+                    't','lws','o','.', 'QUEUED',NULL,'{}','w',0,3,1,1
                 );
                 INSERT INTO workers VALUES(
                     'w','t','https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
@@ -134,8 +134,8 @@ class ProbeMutationRegistryTests(unittest.TestCase):
                 INSERT INTO probe_window_slots VALUES(
                     'probe:default','owner','w',
                     'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-                    'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee#cws-probe=probe:default:owner',
-                    10,20,'chrome.exe','windows_uia_cws_probe',1,1,999
+                    'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee#lws-probe=probe:default:owner',
+                    10,20,'chrome.exe','windows_uia_lws_probe',1,1,999
                 );
                 """
             )
@@ -144,7 +144,7 @@ class ProbeMutationRegistryTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(SCHEMA_VERSION, 8)
+                self.assertEqual(SCHEMA_VERSION, 9)
                 self.assertEqual(
                     registry._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION
                 )
@@ -486,7 +486,7 @@ class ProbeReconciliationDecisionTests(unittest.TestCase):
             100.0,
             999.0,
         )
-        from cws.models import WorkerRecord
+        from lws.models import WorkerRecord
 
         new_worker = WorkerRecord("w2", "t2", URL2, None, WorkerStatus.PARKED, 1.0)
         plan = plan_probe_slot(new_worker, old, now=150.0)
@@ -592,7 +592,7 @@ class ProbeReconciliationDecisionTests(unittest.TestCase):
             rotate_decision.next_state, ProbeMutationState.RECONCILE_REQUIRED
         )
 
-        from cws.models import WorkerRecord
+        from lws.models import WorkerRecord
 
         worker = WorkerRecord("w1", "t1", URL1, None, WorkerStatus.PARKED, 1.0)
         opened = probe_operation_from_plan(
@@ -624,7 +624,7 @@ class ProbeReconciliationDecisionTests(unittest.TestCase):
         self.assertEqual(rotate_decision.outcome, ProbeReconcileOutcome.EXACT_TARGET_ABSENT)
         self.assertEqual(rotate_decision.next_state, ProbeMutationState.RECONCILE_REQUIRED)
 
-        from cws.models import WorkerRecord
+        from lws.models import WorkerRecord
 
         worker = WorkerRecord("w1", "t1", URL1, None, WorkerStatus.PARKED, 1.0)
         plan = plan_probe_slot(worker, None, now=1.0)
