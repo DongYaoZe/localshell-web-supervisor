@@ -6,7 +6,7 @@ The central rule is:
 
 > **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current V3 combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, and a disabled dry-run recovery dispatcher.
+CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.4 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, and an independent resident-watchdog host. ChatGPT mutation transport is still absent.
 
 ## Why
 
@@ -20,9 +20,9 @@ CWS separates three truth domains:
 
 Completion and recovery decisions are never based on the Send/Stop button alone.
 
-## Current V3
+## Current 0.4 control plane
 
-V3 remains fail-closed and safe:
+The 0.4 control plane remains fail-closed and safe:
 
 - SQLite task/worker registry;
 - durable task identity independent of conversation URL;
@@ -35,11 +35,15 @@ V3 remains fail-closed and safe:
 - durable sanitized reconciliation records with deterministic evidence `fence_token`s;
 - system/aggregate Chrome RAM telemetry and conservative active/park/probe planning;
 - mandatory two-sample semantic-fence dispatch planning;
-- an audited `dispatch-plan` command whose action transport is hard-disabled;
+- durable write-ahead action attempts (`ARMED`, `SUBMITTED`, `RECONCILE_REQUIRED`, `ACKNOWLEDGED`, `FAILED`, `CANCELLED`);
+- SQLite schema v2 database-level uniqueness for unresolved actions, preventing duplicate recovery turns after crashes;
+- an audited `dispatch-plan` command whose ChatGPT mutation transport is still hard-disabled;
 - deterministic health classifier;
 - low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
+- independent detached watchdog start/status plus cooperative lease-based stop, without relying on LSM process-tree kill semantics;
+- a strict evidence gate for future authenticated ChatGPT page-close/reopen parking experiments;
 - conservative recovery recommendation and idempotent recovery prompt;
-- **no automatic click/retry/takeover dispatch yet**.
+- **no production ChatGPT click/type/retry/takeover transport yet**.
 
 ### Quick start
 
@@ -62,7 +66,9 @@ python -m cws reconcile example --uia
 python -m cws recommend example --uia
 python -m cws ram-status
 python -m cws pool-plan
+python -m cws action-status example
 python -m cws dispatch-plan example --uia
+python -m cws watchdog-status
 ```
 
 For browser telemetry, `cws observe-dom` ingests the transport-neutral V0 probe shape and
@@ -78,9 +84,7 @@ UTF-8 output.
 The registry defaults to `.cws/registry.sqlite3`. Override with `--db` or `CWS_DB`.
 Local Shell state is detected from `CWS_LSM_STATE_DIR`, `LOCAL_SHELL_MCP_STATE_DIR`, or the hardened Windows deployment path when present. `--lsm-state-dir` always wins.
 
-`cws watch` is the resident watchdog. It scans every 30 seconds by default and emits
-only when the attention queue changes; use `--interval N` to tune it or `--once` for
-cron/scripts/smoke tests. Healthy running tasks stay quiet.
+`cws watch` is the foreground resident loop. For independent hosting, use `cws watchdog-start`, `cws watchdog-status`, and `cws watchdog-stop`. The detached host still runs the same watcher and SQLite singleton lease. Stop is cooperative: it steals the lease into a short-lived `stop:` fence so the old watcher exits on its next failed heartbeat while a replacement remains blocked. No process-tree kill is required.
 
 The V0 file adapter is deliberately **schema-version gated**. It currently understands
 the inspected v4.0.1 file backend (`session version=1`, `jobs version=2`). If LSM changes
@@ -117,8 +121,7 @@ V3's private-transport NO-GO decision and deterministic dry-run dispatcher are d
 in [`docs/V3_DECISION.md`](docs/V3_DECISION.md) and [`docs/V3_SPEC.md`](docs/V3_SPEC.md).
 
 For day-to-day use, see [`docs/OPERATIONS.md`](docs/OPERATIONS.md). `cws doctor` is a
-read-only preflight for registry/LSM schema, RAM, watchdog lease, workspace/task state,
-and optional exact-URL UIA. It never repairs or changes browser/task state.
+read-only preflight for registry/LSM schema, RAM, watchdog lease/PID state, unresolved action fences, workspace/task state, and optional exact-URL UIA. It never repairs or changes browser/task state. The write-ahead action protocol is documented in [`docs/ACTIONS.md`](docs/ACTIONS.md), and isolated browser experiments in [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md).
 
 ## Safety boundary
 
@@ -133,4 +136,5 @@ UIA/LSM snapshot raw metadata is reduced to the numeric/state fields needed by t
 - **V0:** DOM + LSM telemetry + registry + watchdog + recovery recommendations.
 - **V1:** read-only UIA/CDP observability + three-signal classification + durable reconciliation fences. Implemented; recovery dispatch remains disabled.
 - **V2:** low-RAM worker planner, active/probe page-pool primitives, parked-worker bookkeeping, and RAM telemetry. Implemented conservatively; ChatGPT page-close dispatch remains disabled pending a dedicated authenticated experiment.
-- **V3:** evidence says no private Web transport is currently needed; semantic two-phase fences + disabled dry-run recovery/takeover planning are implemented. There is still no automatic click/type/continue/takeover transport.
+- **V3:** evidence says no private Web transport is currently needed; semantic two-phase fences + disabled dry-run recovery/takeover planning are implemented.
+- **0.4:** durable write-ahead action/crash fencing, strict page-close evidence evaluation, registry schema v2 migration, and independent detached watchdog hosting with cooperative stop. ChatGPT mutation transport remains absent until the dedicated `cws-disposable-v4` profile is normally authenticated and isolated experiments pass.

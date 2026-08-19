@@ -67,9 +67,9 @@ def build_dispatch_plan(
 ) -> DispatchPlan:
     """Evaluate a recovery action without executing it.
 
-    V3 ships no ChatGPT action transport. `transport_enabled` therefore remains false in
-    the CLI. This planner exists so future transports cannot bypass reconciliation/fence
-    checks by accident.
+    CWS 0.4 ships no ChatGPT mutation transport. `transport_enabled` therefore remains
+    false in the CLI. This planner exists so future transports cannot bypass
+    reconciliation/fence checks by accident.
     """
     policy = policy or DispatchPolicy()
     now = time.time() if now is None else float(now)
@@ -285,7 +285,7 @@ def _action_from_recommendation(recommendation: RecoveryRecommendation) -> Dispa
 
 
 def execute_dispatch(_plan: DispatchPlan) -> None:
-    """V3 deliberately ships no action transport."""
+    """CWS 0.4 deliberately ships no ChatGPT mutation transport."""
     raise DispatchDisabled(
-        "ChatGPT action transport is disabled in V3; use dispatch-plan for audited dry-run output"
+        "ChatGPT mutation transport is disabled in 0.4; use dispatch-plan for audited dry-run output"
     )

@@ -116,6 +116,27 @@ facts, checkpoint digest, and Git/workspace digest. The canonical snapshot produ
 deterministic `fence_token`. A future action must refresh the evidence and prove the fence
 still matches immediately before dispatch; a fence is not itself permission to act.
 
+## Write-ahead action fence
+
+The 0.4 control plane adds a second fence around any future external worker action. A
+candidate recovery is not allowed to move directly from a matching reconciliation fence
+to a browser mutation. It must first create a durable `ActionAttempt` in SQLite.
+
+The attempt is written **before** any external side effect and starts in `ARMED`. This is
+important for the crash window where a browser click might happen but the process dies
+before it can write a success record. On restart, `ARMED` is treated as unresolved, not as
+proof that nothing happened.
+
+Unresolved states are `ARMED`, `SUBMITTED`, and `RECONCILE_REQUIRED`. Registry schema v2
+enforces a partial unique index so one durable task cannot have two unresolved attempts,
+even if two supervisor processes race. Transport exceptions or ambiguous outcomes become
+`RECONCILE_REQUIRED`; only a transport-proven no-side-effect outcome may become terminal
+`FAILED`. Positive observation bound to the same attempt/worker is required before
+`ACKNOWLEDGED` releases the duplicate-send lock.
+
+The shipped control plane still has no production ChatGPT mutation transport and no manual
+CLI shortcut that can fabricate acknowledgement. See `ACTIONS.md`.
+
 ## RAM / concurrency model
 
 The machine target can be as small as ~8 GB RAM, so the control plane should not equate one task with one permanent Chromium tab.
@@ -129,6 +150,12 @@ V2 target topology:
 - explicit experiments to determine whether closing an executing page affects server-side generation/tool delivery.
 
 Until those experiments exist, CWS must not assume a page is safe to close during execution.
+
+The 0.4 `PageCloseEvidence` gate makes the missing proof machine-checkable. Anonymous or
+localhost tests cannot pass. A passing result requires a dedicated normally authenticated
+ChatGPT profile, close-while-live evidence, independent progress while the page is absent,
+the same conversation after reopen, an advanced signature, valid auth, and no duplicate
+user turn. See `EXPERIMENTS.md`.
 
 The implemented V2 control layer now makes that uncertainty explicit. `pool-plan` pins
 any worker with live/ambiguous task or LSM evidence and ranks only terminal/queued/blocked
@@ -158,12 +185,22 @@ This converts the user's role from polling dozens of conversations to resolving 
 The supervisor is itself a control-plane process, so duplicate resident watchdogs are a
 safety issue. `cws watch` owns a renewable SQLite lease scoped to the registry. A second
 resident watchdog refuses to start while the lease is fresh; if a running watchdog loses
-ownership it exits rather than risk duplicate future recovery dispatches. One-shot scans
+ownership it exits rather than risk duplicate future control-plane actions. One-shot scans
 do not acquire the resident lease.
 
-Production hosting should be independent of a ChatGPT conversation and, on the inspected
-Windows v4.0.1 environment, should not assume an LSM tracked shell job owns the full child
-process tree. See `LSM_FINDINGS.md` for the bootstrap experiment that motivated this fence.
+The 0.4 host layer can launch this same watcher as an independent detached Python process.
+A random `host:<uuid>` lease-owner token, rather than launcher PID equality, proves startup;
+this matters on Windows where a virtual-environment Python wrapper PID can differ from the
+resident Python PID. `watchdog-status` reports the lease PID and liveness.
+
+Stop is cooperative rather than process-tree killing. `watchdog-stop` atomically replaces
+the owner with a fresh `stop:<uuid>` lease. The old watcher then fails its next heartbeat
+and exits by its existing safety path, while the fresh stop lease prevents a replacement
+from racing shutdown. Once the resident PID disappears, the stop lease is cleared.
+
+Production hosting is therefore independent of a ChatGPT conversation and does not rely
+on an LSM tracked shell job owning the full Windows descendant process tree. See
+`LSM_FINDINGS.md` for the bootstrap experiment and `OPERATIONS.md` for host commands.
 
 ## Version boundaries
 
@@ -187,3 +224,10 @@ passing plan has `transport_enabled=false` / `would_dispatch=false`; the shipped
 no ChatGPT click/type/continue adapter and `execute_dispatch()` raises. Takeover remains
 blocked until a separately bound replacement worker and LSM-supported takeover transition
 can be proven safely in isolation. See `V3_DECISION.md` and `V3_SPEC.md`.
+
+### 0.4 control-plane milestone
+Durable write-ahead action attempts, schema-v2 duplicate-action fencing, strict isolated
+page-close evidence evaluation, and independent watchdog hosting/cooperative stop are
+implemented. These additions strengthen the boundary around future actions; they do not
+enable a production ChatGPT mutation transport. Authenticated action/page-close experiments
+remain gated on a normally authenticated disposable `cws-disposable-v4` profile.

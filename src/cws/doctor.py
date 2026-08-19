@@ -11,6 +11,7 @@ from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .ram import MemoryProbeUnavailable, observe_system_memory, observe_windows_process_group
 from .registry import Registry
 from .uia import ChromeUiaProbe, UiaProbeUnavailable
+from .watchdog_host import inspect_watchdog_host
 from .workspace import WorkspaceProbe
 
 
@@ -112,8 +113,8 @@ def run_doctor(
         )
     )
 
-    lease = registry.watchdog_lease("default")
-    if lease is None:
+    watchdog = inspect_watchdog_host(registry)
+    if not watchdog.lease_present:
         checks.append(
             DoctorCheck(
                 "watchdog.lease",
@@ -121,18 +122,28 @@ def run_doctor(
                 "no resident watchdog lease is currently registered",
             )
         )
-    else:
-        now = time.time()
-        fresh = float(lease.get("expires_at") or 0) > now
+    elif watchdog.stop_requested:
         checks.append(
             DoctorCheck(
                 "watchdog.lease",
-                DoctorStatus.PASS if fresh else DoctorStatus.WARN,
-                (
-                    f"fresh owner={lease.get('host')} pid={lease.get('pid')}"
-                    if fresh
-                    else "lease exists but is expired"
-                ),
+                DoctorStatus.WARN,
+                f"cooperative stop requested for pid={watchdog.pid}",
+            )
+        )
+    elif watchdog.fresh and watchdog.pid_alive:
+        checks.append(
+            DoctorCheck(
+                "watchdog.lease",
+                DoctorStatus.PASS,
+                f"fresh owner={watchdog.host} pid={watchdog.pid}",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                "watchdog.lease",
+                DoctorStatus.WARN,
+                watchdog.detail,
             )
         )
 
@@ -143,7 +154,7 @@ def run_doctor(
         DoctorCheck(
             "recovery.transport",
             DoctorStatus.PASS,
-            "disabled in V3; dispatch-plan is dry-run only",
+            "disabled in 0.4; dispatch-plan is dry-run only",
         )
     )
 
@@ -203,6 +214,27 @@ def run_doctor(
             else:
                 checks.append(
                     DoctorCheck("task.lsm", DoctorStatus.WARN, "task has no durable LSM session id")
+                )
+
+            unresolved_action = registry.unresolved_action_attempt(task.task_id)
+            if unresolved_action is None:
+                checks.append(
+                    DoctorCheck(
+                        "task.action_fence",
+                        DoctorStatus.PASS,
+                        "no unresolved write-ahead action attempt",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheck(
+                        "task.action_fence",
+                        DoctorStatus.WARN,
+                        (
+                            f"{unresolved_action.attempt_id} state={unresolved_action.state.value}; "
+                            "new sends are fenced until reconciled"
+                        ),
+                    )
                 )
 
             if task.current_worker_id:

@@ -11,10 +11,12 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import __version__
+from .actions import apply_unresolved_action_gate
 from .browser import observation_from_dom_payload, observation_from_lsm_snapshot
 from .dispatcher import DispatchPolicy, build_dispatch_plan
 from .doctor import DoctorStatus, run_doctor
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
+from .lifecycle import PageCloseEvidence, evaluate_page_close_evidence
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
 from .models import SupervisorState, WorkerStatus
@@ -24,6 +26,12 @@ from .recovery import recommend
 from .registry import Registry
 from .scheduler import attention_queue
 from .uia import ChromeUiaProbe, UiaProbeUnavailable
+from .watchdog_host import (
+    inspect_watchdog_host,
+    launch_detached_watchdog,
+    pid_exists,
+    request_cooperative_stop,
+)
 from .watcher import WatchPolicy, assess
 from .workspace import WorkspaceProbe
 
@@ -36,7 +44,7 @@ def default_db_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe V3)")
+    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.4 control plane)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=None, help="registry sqlite path (default: .cws/registry.sqlite3)")
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
@@ -72,11 +80,36 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--network-suspect-after", type=float, default=180.0)
     watch.add_argument("--lsm-suspect-after", type=float, default=180.0)
     watch.add_argument("--hard-stall-after", type=float, default=600.0)
+    watch.add_argument("--lease-owner", help=argparse.SUPPRESS)
     watch.add_argument(
         "--uia",
         action="store_true",
         help="refresh matching workers from existing Chrome via read-only UI Automation",
     )
+
+    watchdog_status = sub.add_parser(
+        "watchdog-status",
+        help="inspect the resident watchdog lease/PID without changing it",
+    )
+    watchdog_status.add_argument("--json", action="store_true")
+
+    watchdog_start = sub.add_parser(
+        "watchdog-start",
+        help="launch an independent detached resident watchdog; installs no OS service",
+    )
+    watchdog_start.add_argument("--interval", type=float, default=30.0)
+    watchdog_start.add_argument("--uia", action="store_true")
+    watchdog_start.add_argument("--log")
+    watchdog_start.add_argument("--ready-timeout", type=float, default=8.0)
+    watchdog_start.add_argument("--json", action="store_true")
+
+    watchdog_stop = sub.add_parser(
+        "watchdog-stop",
+        help="request cooperative lease-based watchdog stop; sends no process-tree kill",
+    )
+    watchdog_stop.add_argument("--grace", type=float, default=90.0)
+    watchdog_stop.add_argument("--wait", type=float, default=35.0)
+    watchdog_stop.add_argument("--json", action="store_true")
 
     worker = sub.add_parser("add-worker", help="attach a new conversation worker lease")
     worker.add_argument("task_id")
@@ -180,9 +213,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--json", action="store_true")
 
+    action_status = sub.add_parser(
+        "action-status",
+        help="show durable write-ahead action attempts; never sends or acknowledges a message",
+    )
+    action_status.add_argument("task_id")
+    action_status.add_argument("--limit", type=int, default=20)
+    action_status.add_argument("--json", action="store_true")
+
+    action_cancel = sub.add_parser(
+        "action-cancel",
+        help="cancel a local unresolved action lock; does not undo any external side effect",
+    )
+    action_cancel.add_argument("attempt_id")
+    action_cancel.add_argument("--reason", required=True)
+    action_cancel.add_argument("--json", action="store_true")
+
+    lifecycle = sub.add_parser(
+        "evaluate-page-close",
+        help="evaluate JSON evidence for isolated ChatGPT page-close/reopen parking safety",
+    )
+    lifecycle.add_argument("--file", required=True)
+    lifecycle.add_argument("--json", action="store_true")
+
     dispatch = sub.add_parser(
         "dispatch-plan",
-        help="dry-run a fenced recovery action; V3 ships no action transport",
+        help="dry-run a fenced recovery action; 0.4 ships no ChatGPT mutation transport",
     )
     dispatch.add_argument("task_id")
     dispatch.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
@@ -548,6 +604,82 @@ def main(argv: list[str] | None = None) -> int:
                     )
             return 0
 
+        if args.command == "watchdog-status":
+            host_status = inspect_watchdog_host(registry)
+            if args.json:
+                _print_json(asdict(host_status))
+            else:
+                print(
+                    f"watchdog lease_present={str(host_status.lease_present).lower()} "
+                    f"fresh={str(host_status.fresh).lower()} "
+                    f"pid={host_status.pid} alive={host_status.pid_alive}"
+                )
+                print(host_status.detail)
+            return 0
+
+        if args.command == "watchdog-start":
+            launch = launch_detached_watchdog(
+                registry,
+                repo_root=Path.cwd(),
+                db_path=registry.db_path,
+                interval_s=max(1.0, float(args.interval)),
+                use_uia=args.uia,
+                lsm_state_dir=args.lsm_state_dir,
+                git_bin=args.git_bin,
+                log_path=args.log,
+                ready_timeout_s=max(1.0, float(args.ready_timeout)),
+            )
+            if args.json:
+                _print_json(asdict(launch))
+            else:
+                print(
+                    f"watchdog spawn_pid={launch.spawn_pid} lease_pid={launch.lease_pid} "
+                    f"lease_ready={str(launch.lease_ready).lower()} log={launch.log_path}"
+                )
+                print(launch.detail)
+            return 0 if launch.lease_ready else 10
+
+        if args.command == "watchdog-stop":
+            requested = request_cooperative_stop(
+                registry,
+                grace_s=max(5.0, float(args.grace)),
+            )
+            if requested is None:
+                payload = {"requested": False, "stopped": True, "detail": "no watchdog lease"}
+                if args.json:
+                    _print_json(payload)
+                else:
+                    print("no watchdog lease")
+                return 0
+            pid = int(requested.get("pid") or 0)
+            stop_owner = str(requested.get("owner_id") or "")
+            deadline = time.time() + max(0.0, float(args.wait))
+            while pid and pid_exists(pid) and time.time() < deadline:
+                time.sleep(0.1)
+            stopped = not pid or not pid_exists(pid)
+            cleared = False
+            if stopped and stop_owner.startswith("stop:"):
+                cleared = registry.clear_watchdog_stop(
+                    name="default",
+                    stop_owner_id=stop_owner,
+                )
+            payload = {
+                "requested": True,
+                "pid": pid or None,
+                "stopped": stopped,
+                "stop_lease_cleared": cleared,
+                "detail": (
+                    "watchdog exited cooperatively"
+                    if stopped
+                    else "watchdog has not exited yet; stop lease remains fresh and blocks replacement"
+                ),
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                print(payload["detail"])
+            return 0 if stopped else 11
+
         if args.command == "doctor":
             report = run_doctor(
                 registry,
@@ -656,6 +788,58 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  - {item}")
             return 0
 
+        if args.command == "action-status":
+            unresolved = registry.unresolved_action_attempt(args.task_id)
+            history = registry.action_attempts(args.task_id, args.limit)
+            payload = {
+                "task_id": args.task_id,
+                "unresolved": asdict(unresolved) if unresolved else None,
+                "history": [asdict(row) for row in history],
+            }
+            if args.json:
+                _print_json(payload)
+            else:
+                if unresolved is None:
+                    print(f"{args.task_id}: no unresolved action attempt")
+                else:
+                    print(
+                        f"{args.task_id}: unresolved {unresolved.attempt_id} "
+                        f"state={unresolved.state.value} worker={unresolved.worker_id}"
+                    )
+                for row in history:
+                    print(
+                        f"{row.attempt_id:22} {row.state.value:20} "
+                        f"worker={row.worker_id} fence={row.fence_token[:12]}"
+                    )
+            return 0
+
+        if args.command == "action-cancel":
+            updated = registry.cancel_action_attempt(args.attempt_id, reason=args.reason)
+            if args.json:
+                _print_json(asdict(updated))
+            else:
+                print(
+                    f"{updated.attempt_id} state={updated.state.value}; local duplicate-send lock "
+                    "released. This does not undo any external side effect."
+                )
+            return 0
+
+        if args.command == "evaluate-page-close":
+            payload = _read_json_file(args.file)
+            if not isinstance(payload, dict):
+                raise ValueError("page-close evidence JSON must be an object")
+            evaluation = evaluate_page_close_evidence(PageCloseEvidence(**payload))
+            if args.json:
+                _print_json(asdict(evaluation))
+            else:
+                print(
+                    f"parking_safe={str(evaluation.parking_safe).lower()}  "
+                    f"{evaluation.conclusion}"
+                )
+                for blocker in evaluation.blockers:
+                    print(f"blocker: {blocker}")
+            return 0 if evaluation.parking_safe else 8
+
         if args.command == "dispatch-plan":
             previous = registry.latest_reconciliation(args.task_id)
             task, browser, lsm, workspace, result = _assessment(
@@ -690,6 +874,10 @@ def main(argv: list[str] | None = None) -> int:
                     min_network_quiet_s=max(0.0, float(args.min_network_quiet)),
                     transport_enabled=False,
                 ),
+            )
+            plan = apply_unresolved_action_gate(
+                plan,
+                registry.unresolved_action_attempt(task.task_id),
             )
             registry.record_recovery_event(
                 task.task_id,
@@ -763,7 +951,7 @@ def main(argv: list[str] | None = None) -> int:
             interval = max(1.0, float(args.interval))
             last_signature = None
             lease_name = "default"
-            lease_owner = uuid.uuid4().hex
+            lease_owner = args.lease_owner or uuid.uuid4().hex
             lease_ttl = max(60.0, interval * 3.0)
             lease_acquired = False
             if not args.once:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = r"""
 PRAGMA foreign_keys = ON;
@@ -99,6 +99,20 @@ CREATE TABLE IF NOT EXISTS watchdog_leases (
     heartbeat_at REAL NOT NULL,
     expires_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS action_attempts (
+    attempt_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_action_attempts_task_time
+    ON action_attempts(task_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_action_attempts_one_unresolved
+    ON action_attempts(task_id)
+    WHERE state IN ('ARMED', 'SUBMITTED', 'RECONCILE_REQUIRED');
 """
 
 
@@ -111,13 +125,13 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if version not in {0, SCHEMA_VERSION}:
+    if version not in {0, 1, SCHEMA_VERSION}:
         conn.close()
         raise RuntimeError(
-            f"unsupported CWS registry schema version {version}; expected {SCHEMA_VERSION}"
+            f"unsupported CWS registry schema version {version}; expected <= {SCHEMA_VERSION}"
         )
     conn.executescript(SCHEMA)
-    if version == 0:
+    if version < SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     return conn

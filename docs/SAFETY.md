@@ -59,13 +59,30 @@ Hard fences:
 - never repeat a completed side effect simply because message delivery failed;
 - escalate to `NEEDS_HUMAN` when the first genuinely incomplete step cannot be proven.
 
+### Write-ahead external-action fence
+
+Any future external worker mutation must be recorded durably as `ARMED` **before** the
+transport is called. `ARMED`, `SUBMITTED`, and `RECONCILE_REQUIRED` all block another
+attempt for the same task. Registry schema v2 enforces that invariant with a partial unique
+index, so it also holds across racing supervisor processes.
+
+A transport exception is treated as an ambiguous side-effect window and becomes
+`RECONCILE_REQUIRED`; it is not permission to retry. Only proof that no external side
+effect occurred may produce terminal `FAILED`. A positive acknowledgement must be tied to
+the same attempt and worker before the duplicate-send lock is released as `ACKNOWLEDGED`.
+
+CWS exposes no production message-sending command and no manual CLI that can fabricate an
+acknowledgement in this milestone.
+
 ## Process and machine safety
 
 - Modify only the CWS repository unless another path is explicitly authorized.
 - Do not upgrade or patch Local Shell MCP as part of CWS experiments.
 - Do not terminate unrelated processes. Test-process cleanup must use a unique command line/PID created by the same experiment.
 - Production CWS hosting should be independent of a ChatGPT conversation and should use its own singleton watchdog lease.
-- Page-close/RAM experiments must use dedicated harmless workers until it is proven that closing a page cannot damage a live task.
+- Resident watchdog shutdown should use the cooperative lease-stop fence; do not depend on LSM process-tree kill semantics.
+- Page-close/RAM experiments must use dedicated harmless workers until strong authenticated evidence proves that closing a page cannot damage a live task.
+- Anonymous/localhost browser experiments and copied authentication state cannot satisfy the page-close safety gate.
 
 `cws doctor` is intentionally diagnostic-only. It may read registry/LSM schema, local
 workspace/Git state, RAM/process working-set counters, watchdog lease state, and optionally

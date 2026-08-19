@@ -6,6 +6,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
+from .actions import ActionAcknowledgement, ActionAttempt, ActionAttemptState, UNRESOLVED_ACTION_STATES
 from .db import connect
 from .models import (
     BrowserObservation,
@@ -147,6 +148,171 @@ class Registry:
         ).fetchall()
         return [ReconciliationRecord(**json.loads(row["payload_json"])) for row in rows]
 
+    def record_action_attempt(self, attempt: ActionAttempt) -> None:
+        self.get_task(attempt.task_id)
+        worker = self.get_worker(attempt.worker_id)
+        if worker.task_id != attempt.task_id:
+            raise ValueError("action attempt worker belongs to a different task")
+        unresolved = self.unresolved_action_attempt(attempt.task_id)
+        if unresolved is not None and unresolved.attempt_id != attempt.attempt_id:
+            raise RuntimeError(
+                f"task {attempt.task_id} already has unresolved action {unresolved.attempt_id} "
+                f"in state {unresolved.state.value}"
+            )
+        payload = asdict(attempt)
+        payload["state"] = attempt.state.value
+        self._conn.execute(
+            """INSERT INTO action_attempts
+               (attempt_id, task_id, worker_id, state, created_at, updated_at, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                attempt.attempt_id,
+                attempt.task_id,
+                attempt.worker_id,
+                attempt.state.value,
+                attempt.created_at,
+                attempt.updated_at,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        self._conn.commit()
+
+    def get_action_attempt(self, attempt_id: str) -> ActionAttempt:
+        row = self._conn.execute(
+            "SELECT payload_json FROM action_attempts WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown action attempt: {attempt_id}")
+        payload = json.loads(row["payload_json"])
+        payload["state"] = ActionAttemptState(payload["state"])
+        return ActionAttempt(**payload)
+
+    def action_attempts(self, task_id: str, limit: int = 20) -> list[ActionAttempt]:
+        self.get_task(task_id)
+        rows = self._conn.execute(
+            """SELECT attempt_id FROM action_attempts WHERE task_id = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (task_id, max(1, min(limit, 200))),
+        ).fetchall()
+        return [self.get_action_attempt(row["attempt_id"]) for row in rows]
+
+    def unresolved_action_attempt(self, task_id: str) -> ActionAttempt | None:
+        self.get_task(task_id)
+        states = tuple(state.value for state in UNRESOLVED_ACTION_STATES)
+        placeholders = ",".join("?" for _ in states)
+        row = self._conn.execute(
+            f"""SELECT attempt_id FROM action_attempts
+                WHERE task_id = ? AND state IN ({placeholders})
+                ORDER BY created_at DESC LIMIT 1""",
+            (task_id, *states),
+        ).fetchone()
+        return self.get_action_attempt(row["attempt_id"]) if row is not None else None
+
+    def _replace_action_attempt(self, attempt: ActionAttempt) -> ActionAttempt:
+        payload = asdict(attempt)
+        payload["state"] = attempt.state.value
+        cursor = self._conn.execute(
+            """UPDATE action_attempts SET state = ?, updated_at = ?, payload_json = ?
+               WHERE attempt_id = ?""",
+            (
+                attempt.state.value,
+                attempt.updated_at,
+                json.dumps(payload, ensure_ascii=False),
+                attempt.attempt_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise KeyError(f"unknown action attempt: {attempt.attempt_id}")
+        self._conn.commit()
+        return self.get_action_attempt(attempt.attempt_id)
+
+    def mark_action_submitted(
+        self,
+        attempt_id: str,
+        *,
+        transport_name: str,
+        submitted_at: float | None = None,
+    ) -> ActionAttempt:
+        attempt = self.get_action_attempt(attempt_id)
+        if attempt.state != ActionAttemptState.ARMED:
+            raise RuntimeError(f"action {attempt_id} is not ARMED")
+        now = time.time() if submitted_at is None else float(submitted_at)
+        attempt.state = ActionAttemptState.SUBMITTED
+        attempt.transport_name = transport_name
+        attempt.submitted_at = now
+        attempt.updated_at = now
+        return self._replace_action_attempt(attempt)
+
+    def mark_action_reconcile_required(
+        self,
+        attempt_id: str,
+        *,
+        error: str,
+        transport_name: str | None = None,
+        now: float | None = None,
+    ) -> ActionAttempt:
+        attempt = self.get_action_attempt(attempt_id)
+        if attempt.state not in UNRESOLVED_ACTION_STATES:
+            raise RuntimeError(f"action {attempt_id} is already terminal")
+        ts = time.time() if now is None else float(now)
+        attempt.state = ActionAttemptState.RECONCILE_REQUIRED
+        attempt.transport_name = transport_name or attempt.transport_name
+        attempt.last_error = str(error)[:1000]
+        attempt.updated_at = ts
+        return self._replace_action_attempt(attempt)
+
+    def fail_action_attempt(
+        self,
+        attempt_id: str,
+        *,
+        error: str,
+        transport_name: str | None = None,
+        now: float | None = None,
+    ) -> ActionAttempt:
+        """Mark terminal failure only when the caller can prove no side effect occurred."""
+        attempt = self.get_action_attempt(attempt_id)
+        if attempt.state not in UNRESOLVED_ACTION_STATES:
+            raise RuntimeError(f"action {attempt_id} is already terminal")
+        ts = time.time() if now is None else float(now)
+        attempt.state = ActionAttemptState.FAILED
+        attempt.transport_name = transport_name or attempt.transport_name
+        attempt.last_error = str(error)[:1000]
+        attempt.updated_at = ts
+        return self._replace_action_attempt(attempt)
+
+    def acknowledge_action(
+        self,
+        acknowledgement: ActionAcknowledgement,
+    ) -> ActionAttempt:
+        from .actions import validate_acknowledgement
+
+        attempt = self.get_action_attempt(acknowledgement.attempt_id)
+        validate_acknowledgement(attempt, acknowledgement)
+        attempt.state = ActionAttemptState.ACKNOWLEDGED
+        attempt.acknowledged_at = acknowledgement.observed_at
+        attempt.acknowledgement_kind = acknowledgement.kind
+        attempt.acknowledgement_hash = acknowledgement.evidence_hash
+        attempt.last_error = None
+        attempt.updated_at = acknowledgement.observed_at
+        return self._replace_action_attempt(attempt)
+
+    def cancel_action_attempt(
+        self,
+        attempt_id: str,
+        *,
+        reason: str,
+        now: float | None = None,
+    ) -> ActionAttempt:
+        attempt = self.get_action_attempt(attempt_id)
+        if attempt.state not in UNRESOLVED_ACTION_STATES:
+            raise RuntimeError(f"action {attempt_id} is already terminal")
+        ts = time.time() if now is None else float(now)
+        attempt.state = ActionAttemptState.CANCELLED
+        attempt.last_error = str(reason)[:1000]
+        attempt.updated_at = ts
+        return self._replace_action_attempt(attempt)
+
     def record_recovery_event(
         self,
         task_id: str,
@@ -279,6 +445,61 @@ class Registry:
             "SELECT * FROM watchdog_leases WHERE name = ?", (name,)
         ).fetchone()
         return dict(row) if row is not None else None
+
+    def request_watchdog_stop(
+        self,
+        *,
+        name: str = "default",
+        grace_s: float = 60.0,
+        now: float | None = None,
+    ) -> dict | None:
+        """Fence a running watchdog so it exits by losing its next heartbeat lease.
+
+        The stop owner remains fresh during the grace period, preventing a replacement
+        watchdog from starting before the old PID has exited.
+        """
+        now = time.time() if now is None else float(now)
+        token = f"stop:{uuid.uuid4().hex}"
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM watchdog_leases WHERE name = ?", (name,)
+            ).fetchone()
+            if row is None:
+                self._conn.rollback()
+                return None
+            previous = dict(row)
+            if str(previous["owner_id"]).startswith("stop:") and float(previous["expires_at"]) > now:
+                self._conn.rollback()
+                return previous
+            expires_at = now + max(5.0, float(grace_s))
+            self._conn.execute(
+                """UPDATE watchdog_leases
+                   SET owner_id = ?, heartbeat_at = ?, expires_at = ?
+                   WHERE name = ?""",
+                (token, now, expires_at, name),
+            )
+            self._conn.commit()
+            return {
+                **previous,
+                "previous_owner_id": previous["owner_id"],
+                "owner_id": token,
+                "heartbeat_at": now,
+                "expires_at": expires_at,
+            }
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def clear_watchdog_stop(self, *, name: str, stop_owner_id: str) -> bool:
+        if not stop_owner_id.startswith("stop:"):
+            raise ValueError("stop_owner_id must be a stop: lease token")
+        cursor = self._conn.execute(
+            "DELETE FROM watchdog_leases WHERE name = ? AND owner_id = ?",
+            (name, stop_owner_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
 
     def add_worker(
         self,
