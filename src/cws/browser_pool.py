@@ -75,10 +75,15 @@ class PagePool:
         now = time.time() if now is None else float(now)
         existing = self._leases.get(page_id)
         if existing:
+            previous = (existing.role, existing.worker_id, existing.last_used_at)
             existing.role = role
             existing.worker_id = worker_id
             existing.last_used_at = now
-            self._enforce_capacity(exclude_page_id=page_id)
+            try:
+                self._enforce_capacity(exclude_page_id=page_id)
+            except Exception:
+                existing.role, existing.worker_id, existing.last_used_at = previous
+                raise
             return existing
         lease = PageLease(
             page_id=page_id,

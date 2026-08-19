@@ -18,6 +18,20 @@ class PagePoolTests(unittest.TestCase):
             pool.register_page("probe2", role=PageRole.PROBE, worker_id=None, now=2)
         self.assertEqual([lease.page_id for lease in pool.leases()], ["probe1"])
 
+    def test_failed_existing_role_change_rolls_back_entire_lease(self):
+        pool = PagePool(max_active_pages=2, max_probe_pages=1)
+        original = pool.register_page("active", role=PageRole.ACTIVE, worker_id="w1", now=1)
+        pool.register_page("probe", role=PageRole.PROBE, worker_id=None, now=1)
+
+        with self.assertRaises(PagePoolError):
+            pool.register_page("active", role=PageRole.PROBE, worker_id=None, now=2)
+
+        current = next(lease for lease in pool.leases() if lease.page_id == "active")
+        self.assertIs(current, original)
+        self.assertEqual(current.role, PageRole.ACTIVE)
+        self.assertEqual(current.worker_id, "w1")
+        self.assertEqual(current.last_used_at, 1)
+
     def test_release_only_forgets_already_closed_page(self):
         pool = PagePool()
         pool.register_page("a", role=PageRole.ACTIVE, worker_id="w1", now=1)
