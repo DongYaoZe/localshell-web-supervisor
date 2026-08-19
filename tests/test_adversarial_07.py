@@ -25,6 +25,7 @@ from cws.models import (
     LsmObservation,
     PageCapabilityKind,
     PageCapabilityRecord,
+    ProbeMutationState,
     ProbeWindowSlotBinding,
     SupervisorState,
     TaskRecord,
@@ -37,7 +38,14 @@ from cws.page_runtime import (
     ChromeUiaProbeWindowTransport,
     ProbeSlotAction,
     plan_probe_slot,
+    probe_operation_from_plan,
     tagged_probe_url,
+)
+from cws.probe_ops import (
+    ProbeMutationObservation,
+    ProbeReconcileOutcome,
+    ProbeWindowMatch,
+    decide_probe_reconciliation,
 )
 from cws.reconcile import build_reconciliation_record, fence_matches
 from cws.registry import Registry
@@ -463,39 +471,50 @@ class ProbeIdentityAdversarialTests(unittest.TestCase):
     @patch("cws.page_runtime.subprocess.Popen")
     def test_rotation_never_opens_new_target_if_old_owner_tag_is_multiply_bound(self, popen):
         existing = probe_slot()
-        plan = plan_probe_slot(worker(URL2, worker_id="w2"), existing, now=NOW)
+        target = worker(URL2, worker_id="w2")
+        plan = plan_probe_slot(target, existing, now=NOW)
         transport = ChromeUiaProbeWindowTransport(
             chrome_executable=CHROME,
             enabled=True,
             open_timeout_s=0.05,
         )
-        with (
-            patch.object(
-                transport,
-                "_close",
-                return_value={
-                    "closed": True,
-                    "absent": False,
-                    "ambiguous": False,
-                    "detail": "close requested",
-                },
-            ),
-            patch.object(
-                transport,
-                "_find",
-                return_value={
-                    "count": 2,
-                    "matches": [
-                        {"window_handle": 111, "browser_pid": 222},
-                        {"window_handle": 333, "browser_pid": 444},
-                    ],
-                },
-            ),
-        ):
-            result = transport.execute(plan, existing=existing)
+        result = transport.execute(plan, existing=existing)
         self.assertFalse(result.changed)
-        self.assertTrue(result.side_effect_possible)
-        self.assertIn("multiply bound", result.detail)
+        self.assertFalse(result.side_effect_possible)
+        self.assertIn("durably ARMED", result.detail)
+
+        operation = probe_operation_from_plan(
+            target,
+            plan,
+            existing,
+            chrome_executable=CHROME,
+            now=NOW,
+            operation_id="op-adversarial-multiple",
+            nonce="nonce-adversarial-multiple",
+        )
+        operation.state = ProbeMutationState.CLOSE_SUBMITTED
+        decision = decide_probe_reconciliation(
+            operation,
+            ProbeMutationObservation(
+                observed_at=NOW + 1,
+                old_matches=[
+                    ProbeWindowMatch(
+                        existing.window_handle,
+                        existing.browser_pid,
+                        existing.chrome_executable,
+                        existing.actual_url,
+                    ),
+                    ProbeWindowMatch(
+                        333,
+                        444,
+                        existing.chrome_executable,
+                        existing.actual_url,
+                    ),
+                ],
+            ),
+        )
+        self.assertEqual(decision.outcome, ProbeReconcileOutcome.MULTIPLE_MATCHES)
+        self.assertFalse(decision.may_open)
         popen.assert_not_called()
 
     def test_real_find_script_pid_collision_is_recorded_for_child_a(self):
