@@ -115,6 +115,48 @@ class ProbeWindowSlotBinding:
         return self.expires_at > float(now)
 
 
+class ProbeMutationKind(StrEnum):
+    OPEN = "OPEN"
+    ROTATE = "ROTATE"
+    CLOSE = "CLOSE"
+
+
+class ProbeMutationState(StrEnum):
+    ARMED = "ARMED"
+    CLOSE_SUBMITTED = "CLOSE_SUBMITTED"
+    READY_TO_OPEN = "READY_TO_OPEN"
+    OPEN_SUBMITTED = "OPEN_SUBMITTED"
+    RECONCILE_REQUIRED = "RECONCILE_REQUIRED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+@dataclass(slots=True)
+class ProbeMutationOperation:
+    operation_id: str
+    nonce: str
+    kind: ProbeMutationKind
+    state: ProbeMutationState
+    slot_id: str
+    target_task_id: str
+    target_worker_id: str
+    target_conversation_url: str
+    owner_token: str
+    expected_actual_url: str
+    expected_chrome_executable: str
+    source: str
+    prior_slot: dict[str, Any] | None
+    created_at: float
+    updated_at: float
+    slot_ttl_s: float = 120.0
+    reconcile_attempts: int = 0
+    last_reconcile_at: float | None = None
+    last_outcome: str | None = None
+    last_error: str | None = None
+    resume_state: str | None = None
+
+
 @dataclass(slots=True)
 class BrowserObservation:
     worker_id: str

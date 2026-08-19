@@ -11,7 +11,21 @@ from enum import StrEnum
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
-from .models import BrowserObservation, ProbeWindowSlotBinding, WorkerRecord, WorkerStatus
+from .models import (
+    BrowserObservation,
+    ProbeMutationKind,
+    ProbeMutationOperation,
+    ProbeMutationState,
+    ProbeWindowSlotBinding,
+    WorkerRecord,
+    WorkerStatus,
+)
+from .probe_ops import (
+    ProbeMutationObservation,
+    ProbeWindowMatch,
+    slot_from_snapshot,
+    snapshot_probe_slot,
+)
 from .uia import ChromeUiaProbe, UiaProbeUnavailable, conversation_id_from_url
 
 
@@ -201,6 +215,94 @@ def plan_probe_slot(
     )
 
 
+def probe_operation_from_plan(
+    worker: WorkerRecord,
+    plan: ProbeSlotPlan,
+    existing: ProbeWindowSlotBinding | None,
+    *,
+    chrome_executable: str,
+    now: float | None = None,
+    operation_id: str | None = None,
+    nonce: str | None = None,
+    slot_ttl_s: float = 120.0,
+) -> ProbeMutationOperation:
+    """Convert an OPEN/ROTATE plan into an ARMED durable write-ahead operation."""
+    if plan.worker_id != worker.worker_id or plan.target_conversation_url != worker.conversation_url:
+        raise ValueError("probe plan no longer matches its worker")
+    if plan.action not in {ProbeSlotAction.OPEN, ProbeSlotAction.ROTATE}:
+        raise ValueError("only OPEN/ROTATE plans create probe mutation operations")
+    if not plan.owner_token:
+        raise ValueError("mutating probe plan requires an ownership token")
+    if plan.action == ProbeSlotAction.OPEN and existing is not None:
+        raise ValueError("OPEN operation must not have a prior slot")
+    if plan.action == ProbeSlotAction.ROTATE and existing is None:
+        raise ValueError("ROTATE operation requires the prior slot")
+    ts = time.time() if now is None else float(now)
+    actual_url = tagged_probe_url(
+        worker.conversation_url,
+        slot_id=plan.slot_id,
+        owner_token=plan.owner_token,
+    )
+    return ProbeMutationOperation(
+        operation_id=operation_id or f"probeop_{uuid.uuid4().hex}",
+        nonce=nonce or uuid.uuid4().hex,
+        kind=(
+            ProbeMutationKind.OPEN
+            if plan.action == ProbeSlotAction.OPEN
+            else ProbeMutationKind.ROTATE
+        ),
+        state=ProbeMutationState.ARMED,
+        slot_id=plan.slot_id,
+        target_task_id=worker.task_id,
+        target_worker_id=worker.worker_id,
+        target_conversation_url=worker.conversation_url,
+        owner_token=plan.owner_token,
+        expected_actual_url=actual_url,
+        expected_chrome_executable=chrome_executable,
+        source=PROBE_SLOT_SOURCE,
+        prior_slot=snapshot_probe_slot(existing),
+        created_at=ts,
+        updated_at=ts,
+        slot_ttl_s=max(1.0, float(slot_ttl_s)),
+    )
+
+
+def probe_close_operation(
+    worker: WorkerRecord,
+    existing: ProbeWindowSlotBinding,
+    *,
+    now: float | None = None,
+    operation_id: str | None = None,
+    nonce: str | None = None,
+) -> ProbeMutationOperation:
+    """Create an ARMED durable CLOSE operation for one exact CWS-owned probe slot."""
+    if worker.status != WorkerStatus.PARKED:
+        raise ValueError("probe CLOSE requires a parked worker")
+    if existing.target_worker_id != worker.worker_id:
+        raise ValueError("probe CLOSE worker does not own the durable slot")
+    if not slot_owns_actual_url(existing):
+        raise ValueError("probe CLOSE requires an exact CWS ownership tag")
+    ts = time.time() if now is None else float(now)
+    return ProbeMutationOperation(
+        operation_id=operation_id or f"probeop_{uuid.uuid4().hex}",
+        nonce=nonce or uuid.uuid4().hex,
+        kind=ProbeMutationKind.CLOSE,
+        state=ProbeMutationState.ARMED,
+        slot_id=existing.slot_id,
+        target_task_id=worker.task_id,
+        target_worker_id=worker.worker_id,
+        target_conversation_url=worker.conversation_url,
+        owner_token=existing.owner_token,
+        expected_actual_url="",
+        expected_chrome_executable=existing.chrome_executable,
+        source=existing.source,
+        prior_slot=snapshot_probe_slot(existing),
+        created_at=ts,
+        updated_at=ts,
+        slot_ttl_s=max(1.0, existing.expires_at - existing.observed_at),
+    )
+
+
 def observe_probe_slot(
     worker: WorkerRecord,
     slot: ProbeWindowSlotBinding,
@@ -233,19 +335,18 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 function Get-Value($e){try{$p=$e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern);if($p){return [string]$p.Current.Value}}catch{};return $null}
 $expected=[string]$env:CWS_EXPECTED_ACTUAL_URL
-$expectedExe=[string]$env:CWS_EXPECTED_CHROME_EXE
 $desktop=[System.Windows.Automation.AutomationElement]::RootElement
 $wins=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
 $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'view_1012')
 $rows=@()
 for($i=0;$i -lt $wins.Count;$i++){
   $w=$wins.Item($i); if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1'){continue}
-  $pid=[int]$w.Current.ProcessId; if(-not $pid){continue}; try{$proc=Get-Process -Id $pid -ErrorAction Stop}catch{continue}
-  if($proc.ProcessName -ne 'chrome' -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase)){continue}
+  $browserPid=[int]$w.Current.ProcessId; if(-not $browserPid){continue}; try{$proc=Get-Process -Id $browserPid -ErrorAction Stop}catch{continue}
+  if($proc.ProcessName -ne 'chrome'){continue}
   $bar=$w.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond); if(-not $bar){continue}
   $address=Get-Value $bar; if(-not $address){continue}; if(-not $address.StartsWith('http')){$address='https://'+$address}
   if($address.TrimEnd('/') -ne $expected.TrimEnd('/')){continue}
-  $rows += [pscustomobject]@{window_handle=[int64]$w.Current.NativeWindowHandle;browser_pid=$pid;actual_url=$address}
+  $rows += [pscustomobject]@{window_handle=[int64]$w.Current.NativeWindowHandle;browser_pid=$browserPid;chrome_executable=[string]$proc.Path;actual_url=$address}
 }
 $obj=[pscustomobject]@{count=[int]$rows.Count;matches=@($rows)}
 $json=$obj|ConvertTo-Json -Compress -Depth 5
@@ -262,10 +363,10 @@ $expected=[string]$env:CWS_EXPECTED_ACTUAL_URL; $expectedExe=[string]$env:CWS_EX
 try{$w=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$hwnd)}catch{$w=$null}
 if(-not $w){$obj=[pscustomobject]@{closed=$false;absent=$true;ambiguous=$false;detail='slot window already absent'}}
 else{
-  $pid=[int]$w.Current.ProcessId
-  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $pid -ne $pidExpected){$obj=[pscustomobject]@{closed=$false;absent=$false;ambiguous=$true;detail='HWND no longer matches bound Chrome identity'}}
+  $browserPid=[int]$w.Current.ProcessId
+  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $browserPid -ne $pidExpected){$obj=[pscustomobject]@{closed=$false;absent=$false;ambiguous=$true;detail='HWND no longer matches bound Chrome identity'}}
   else{
-    try{$proc=Get-Process -Id $pid -ErrorAction Stop}catch{$proc=$null}
+    try{$proc=Get-Process -Id $browserPid -ErrorAction Stop}catch{$proc=$null}
     $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'view_1012')
     $bar=$w.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond); $address=if($bar){Get-Value $bar}else{$null}; if($address -and -not $address.StartsWith('http')){$address='https://'+$address}
     if(-not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase) -or -not $address -or $address.TrimEnd('/') -ne $expected.TrimEnd('/')){$obj=[pscustomobject]@{closed=$false;absent=$false;ambiguous=$true;detail='slot executable or ownership URL changed'}}
@@ -367,6 +468,151 @@ class ChromeUiaProbeWindowTransport:
             env=env,
         )
 
+    @staticmethod
+    def _matches(found: dict[str, Any]) -> list[ProbeWindowMatch]:
+        matches: list[ProbeWindowMatch] = []
+        for row in found.get("matches") or []:
+            matches.append(
+                ProbeWindowMatch(
+                    window_handle=int(row.get("window_handle") or 0),
+                    browser_pid=int(row.get("browser_pid") or 0),
+                    chrome_executable=str(row.get("chrome_executable") or ""),
+                    actual_url=str(row.get("actual_url") or ""),
+                )
+            )
+        return matches
+
+    def observe_operation(self, operation: ProbeMutationOperation) -> ProbeMutationObservation:
+        """Read-only exact-tag observation used to reconcile a durable mutation operation."""
+        if os.name != "nt":
+            return ProbeMutationObservation(
+                observed_at=time.time(), complete=False, error="Windows UI Automation is unavailable"
+            )
+        try:
+            old_matches: list[ProbeWindowMatch] = []
+            prior = slot_from_snapshot(operation.prior_slot)
+            if prior is not None:
+                old_matches = self._matches(self._find(prior.actual_url))
+            new_matches: list[ProbeWindowMatch] = []
+            if operation.expected_actual_url:
+                new_matches = self._matches(self._find(operation.expected_actual_url))
+            return ProbeMutationObservation(
+                observed_at=time.time(),
+                old_matches=old_matches,
+                new_matches=new_matches,
+            )
+        except BaseException as exc:
+            return ProbeMutationObservation(
+                observed_at=time.time(),
+                complete=False,
+                error=f"{type(exc).__name__}: {str(exc)[:500]}",
+            )
+
+    def close_authorized(self, operation: ProbeMutationOperation) -> ProbeSlotExecution:
+        """Execute one exact close only after CLOSE_SUBMITTED was durably persisted."""
+        if not self.enabled:
+            raise ProbeWindowTransportDisabled("normal-Chrome probe-window mutation transport is gated")
+        if os.name != "nt":
+            return ProbeSlotExecution(False, False, "Windows UI Automation is unavailable")
+        if operation.kind not in {ProbeMutationKind.ROTATE, ProbeMutationKind.CLOSE}:
+            return ProbeSlotExecution(False, False, "operation has no CLOSE phase")
+        if operation.state != ProbeMutationState.CLOSE_SUBMITTED:
+            return ProbeSlotExecution(False, False, "CLOSE authority was not durably submitted")
+        prior = slot_from_snapshot(operation.prior_slot)
+        if prior is None:
+            return ProbeSlotExecution(False, False, "CLOSE authority has no prior slot snapshot")
+        result = self._close(prior)
+        if bool(result.get("ambiguous")):
+            return ProbeSlotExecution(
+                False,
+                False,
+                str(result.get("detail") or "exact probe close became ambiguous"),
+            )
+        if bool(result.get("absent")):
+            return ProbeSlotExecution(False, False, "exact old probe target was already absent")
+        return ProbeSlotExecution(
+            bool(result.get("closed")),
+            bool(result.get("closed")),
+            str(result.get("detail") or "exact probe close requested"),
+        )
+
+    def open_authorized(self, operation: ProbeMutationOperation) -> ProbeSlotExecution:
+        """Launch one tagged window only after OPEN_SUBMITTED was durably persisted."""
+        if not self.enabled:
+            raise ProbeWindowTransportDisabled("normal-Chrome probe-window mutation transport is gated")
+        if os.name != "nt":
+            return ProbeSlotExecution(False, False, "Windows UI Automation is unavailable")
+        if operation.kind not in {ProbeMutationKind.OPEN, ProbeMutationKind.ROTATE}:
+            return ProbeSlotExecution(False, False, "operation has no OPEN phase")
+        if operation.state != ProbeMutationState.OPEN_SUBMITTED:
+            return ProbeSlotExecution(False, False, "OPEN authority was not durably submitted")
+        if not operation.expected_actual_url:
+            return ProbeSlotExecution(False, False, "OPEN authority has no expected tagged target")
+        if operation.expected_chrome_executable.casefold() != self.chrome_executable.casefold():
+            return ProbeSlotExecution(False, False, "transport executable does not match durable authority")
+
+        try:
+            subprocess.Popen(
+                [self.chrome_executable, "--new-window", operation.expected_actual_url],
+                close_fds=True,
+            )
+        except BaseException as exc:
+            return ProbeSlotExecution(
+                False,
+                False,
+                f"Chrome launch failed before a probe window was observed: {type(exc).__name__}",
+            )
+
+        deadline = time.time() + self.open_timeout_s
+        while time.time() < deadline:
+            matches = self._matches(self._find(operation.expected_actual_url))
+            if len(matches) == 1:
+                match = matches[0]
+                if (
+                    match.window_handle <= 0
+                    or match.browser_pid <= 0
+                    or match.actual_url.rstrip("/") != operation.expected_actual_url.rstrip("/")
+                    or match.chrome_executable.casefold()
+                    != operation.expected_chrome_executable.casefold()
+                ):
+                    return ProbeSlotExecution(
+                        False,
+                        True,
+                        "tagged probe target appeared with changed identity; reconcile",
+                    )
+                now = time.time()
+                return ProbeSlotExecution(
+                    True,
+                    True,
+                    "single tagged CWS probe window opened",
+                    ProbeWindowSlotBinding(
+                        slot_id=operation.slot_id,
+                        owner_token=operation.owner_token,
+                        target_worker_id=operation.target_worker_id,
+                        target_conversation_url=operation.target_conversation_url,
+                        actual_url=operation.expected_actual_url,
+                        window_handle=match.window_handle,
+                        browser_pid=match.browser_pid,
+                        chrome_executable=operation.expected_chrome_executable,
+                        source=operation.source,
+                        bound_at=now,
+                        observed_at=now,
+                        expires_at=now + max(1.0, operation.slot_ttl_s),
+                    ),
+                )
+            if len(matches) > 1:
+                return ProbeSlotExecution(
+                    False,
+                    True,
+                    "multiple tagged probe windows appeared; stop and reconcile",
+                )
+            time.sleep(0.1)
+        return ProbeSlotExecution(
+            False,
+            True,
+            "Chrome launch occurred but the tagged probe window was not uniquely observed before timeout",
+        )
+
     def execute(
         self,
         plan: ProbeSlotPlan,
@@ -397,6 +643,10 @@ class ChromeUiaProbeWindowTransport:
             if (
                 int(row.get("window_handle") or 0) != existing.window_handle
                 or int(row.get("browser_pid") or 0) != existing.browser_pid
+                or str(row.get("chrome_executable") or "").casefold()
+                != existing.chrome_executable.casefold()
+                or str(row.get("actual_url") or "").rstrip("/")
+                != existing.actual_url.rstrip("/")
             ):
                 return ProbeSlotExecution(
                     False,
@@ -411,98 +661,8 @@ class ChromeUiaProbeWindowTransport:
             )
             return ProbeSlotExecution(False, False, "existing CWS probe window reused", refreshed)
 
-        if plan.action == ProbeSlotAction.ROTATE:
-            if existing is None:
-                return ProbeSlotExecution(False, False, "rotate requires the existing slot")
-            close_result = self._close(existing)
-            if bool(close_result.get("ambiguous")):
-                return ProbeSlotExecution(
-                    False,
-                    False,
-                    str(close_result.get("detail") or "slot close became ambiguous"),
-                )
-            # WindowPattern.Close is asynchronous. Do not launch a replacement merely because
-            # Close() returned: first prove the ownership-tagged old window is absent.
-            absence_deadline = time.time() + min(5.0, self.open_timeout_s)
-            old_count = None
-            while time.time() < absence_deadline:
-                old_probe = self._find(existing.actual_url)
-                old_count = int(old_probe.get("count") or 0)
-                if old_count == 0:
-                    break
-                if old_count > 1:
-                    return ProbeSlotExecution(
-                        False,
-                        True,
-                        "old probe ownership tag became multiply bound after close; reconcile",
-                    )
-                time.sleep(0.05)
-            if old_count != 0:
-                return ProbeSlotExecution(
-                    False,
-                    True,
-                    "exact old probe close was requested but absence was not proven; replacement not opened",
-                )
-        elif plan.action != ProbeSlotAction.OPEN:
-            return ProbeSlotExecution(False, False, "unsupported probe-slot action")
-
-        owner_token = plan.owner_token or uuid.uuid4().hex
-        actual_url = tagged_probe_url(
-            plan.target_conversation_url,
-            slot_id=plan.slot_id,
-            owner_token=owner_token,
-        )
-        try:
-            subprocess.Popen(
-                [self.chrome_executable, "--new-window", actual_url],
-                close_fds=True,
-            )
-        except BaseException as exc:
-            return ProbeSlotExecution(
-                False,
-                False,
-                f"Chrome launch failed before a probe window was observed: {type(exc).__name__}",
-            )
-
-        deadline = time.time() + self.open_timeout_s
-        while time.time() < deadline:
-            found = self._find(actual_url)
-            matches = found.get("matches") or []
-            count = int(found.get("count") or 0)
-            if count == 1:
-                row = matches[0]
-                now = time.time()
-                binding = ProbeWindowSlotBinding(
-                    slot_id=plan.slot_id,
-                    owner_token=owner_token,
-                    target_worker_id=plan.worker_id,
-                    target_conversation_url=plan.target_conversation_url,
-                    actual_url=actual_url,
-                    window_handle=int(row.get("window_handle") or 0),
-                    browser_pid=int(row.get("browser_pid") or 0),
-                    chrome_executable=self.chrome_executable,
-                    source=PROBE_SLOT_SOURCE,
-                    bound_at=now,
-                    observed_at=now,
-                    expires_at=now + self.slot_ttl_s,
-                )
-                if binding.window_handle > 0 and binding.browser_pid > 0:
-                    return ProbeSlotExecution(
-                        True,
-                        True,
-                        "single tagged CWS probe window opened",
-                        binding,
-                    )
-            if count > 1:
-                return ProbeSlotExecution(
-                    False,
-                    True,
-                    "multiple tagged probe windows appeared; stop and reconcile",
-                )
-            time.sleep(0.1)
-
         return ProbeSlotExecution(
             False,
-            True,
-            "Chrome launch occurred but the tagged probe window was not uniquely observed before timeout",
+            False,
+            "mutating probe plans require a durably ARMED operation and explicit close/open authority",
         )

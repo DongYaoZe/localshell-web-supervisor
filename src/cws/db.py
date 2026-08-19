@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = r"""
 PRAGMA foreign_keys = ON;
@@ -142,6 +142,24 @@ CREATE TABLE IF NOT EXISTS probe_window_slots (
 );
 CREATE INDEX IF NOT EXISTS idx_probe_window_slots_expires
     ON probe_window_slots(expires_at);
+CREATE TABLE IF NOT EXISTS probe_mutation_operations (
+    operation_id TEXT PRIMARY KEY,
+    nonce TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL,
+    slot_id TEXT NOT NULL,
+    target_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+    target_worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_mutation_operations_time
+    ON probe_mutation_operations(created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_mutation_one_unresolved
+    ON probe_mutation_operations((1))
+    WHERE state IN ('ARMED', 'CLOSE_SUBMITTED', 'READY_TO_OPEN',
+                    'OPEN_SUBMITTED', 'RECONCILE_REQUIRED');
 CREATE TABLE IF NOT EXISTS page_capabilities (
     capability_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,

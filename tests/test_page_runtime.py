@@ -1,13 +1,16 @@
 import unittest
 from unittest.mock import patch
 
-from cws.models import ProbeWindowSlotBinding, WorkerRecord, WorkerStatus
+from cws.models import ProbeMutationState, ProbeWindowSlotBinding, WorkerRecord, WorkerStatus
 from cws.page_runtime import (
+    _CLOSE_SCRIPT,
+    _FIND_SCRIPT,
     ChromeUiaProbeWindowTransport,
     DisabledProbeWindowTransport,
     ProbeSlotAction,
     ProbeWindowTransportDisabled,
     plan_probe_slot,
+    probe_operation_from_plan,
     slot_owns_actual_url,
     tagged_probe_url,
 )
@@ -81,9 +84,41 @@ class ProbeSlotPlannerTests(unittest.TestCase):
             DisabledProbeWindowTransport().execute(plan, existing=None)
 
     @patch("cws.page_runtime.os.name", "nt")
+    def test_reuse_blocks_if_executable_identity_changed(self):
+        existing = slot()
+        plan = plan_probe_slot(worker(), existing, now=150.0)
+        transport = ChromeUiaProbeWindowTransport(chrome_executable=CHROME, enabled=True)
+        with patch.object(
+            transport,
+            "_find",
+            return_value={
+                "count": 1,
+                "matches": [{
+                    "window_handle": existing.window_handle,
+                    "browser_pid": existing.browser_pid,
+                    "chrome_executable": r"C:\Other\chrome.exe",
+                    "actual_url": existing.actual_url,
+                }],
+            },
+        ):
+            out = transport.execute(plan, existing=existing)
+        self.assertFalse(out.changed)
+        self.assertFalse(out.side_effect_possible)
+        self.assertIn("identity changed", out.detail)
+
+    @patch("cws.page_runtime.os.name", "nt")
     @patch("cws.page_runtime.subprocess.Popen")
     def test_open_transport_binds_unique_tagged_window(self, popen):
-        plan = plan_probe_slot(worker(), None, now=150.0)
+        target = worker()
+        plan = plan_probe_slot(target, None, now=150.0)
+        operation = probe_operation_from_plan(
+            target,
+            plan,
+            None,
+            chrome_executable=CHROME,
+            now=150.0,
+        )
+        operation.state = ProbeMutationState.OPEN_SUBMITTED
         transport = ChromeUiaProbeWindowTransport(
             chrome_executable=CHROME,
             enabled=True,
@@ -94,10 +129,15 @@ class ProbeSlotPlannerTests(unittest.TestCase):
             "_find",
             return_value={
                 "count": 1,
-                "matches": [{"window_handle": 99, "browser_pid": 77, "actual_url": "x"}],
+                "matches": [{
+                    "window_handle": 99,
+                    "browser_pid": 77,
+                    "chrome_executable": CHROME,
+                    "actual_url": operation.expected_actual_url,
+                }],
             },
         ):
-            out = transport.execute(plan, existing=None)
+            out = transport.open_authorized(operation)
         self.assertTrue(out.changed)
         self.assertEqual(out.binding.target_worker_id, "w1")
         self.assertEqual(out.binding.window_handle, 99)
@@ -107,7 +147,12 @@ class ProbeSlotPlannerTests(unittest.TestCase):
     @patch("cws.page_runtime.subprocess.Popen")
     def test_rotate_refuses_to_open_if_exact_close_is_ambiguous(self, popen):
         existing = slot()
-        plan = plan_probe_slot(worker(URL2, worker_id="w2"), existing, now=150.0)
+        target = worker(URL2, worker_id="w2")
+        plan = plan_probe_slot(target, existing, now=150.0)
+        operation = probe_operation_from_plan(
+            target, plan, existing, chrome_executable=CHROME, now=150.0
+        )
+        operation.state = ProbeMutationState.CLOSE_SUBMITTED
         transport = ChromeUiaProbeWindowTransport(chrome_executable=CHROME, enabled=True)
         with patch.object(
             transport,
@@ -119,47 +164,36 @@ class ProbeSlotPlannerTests(unittest.TestCase):
                 "detail": "mismatch",
             },
         ):
-            out = transport.execute(plan, existing=existing)
+            out = transport.close_authorized(operation)
         self.assertFalse(out.changed)
         self.assertFalse(out.side_effect_possible)
         popen.assert_not_called()
 
     @patch("cws.page_runtime.os.name", "nt")
     @patch("cws.page_runtime.subprocess.Popen")
-    @patch("cws.page_runtime.time.sleep")
-    def test_rotate_does_not_open_until_old_tagged_window_is_absent(self, _sleep, popen):
+    def test_rotate_does_not_open_without_ready_to_open_authority(self, popen):
         existing = slot()
-        plan = plan_probe_slot(worker(URL2, worker_id="w2"), existing, now=150.0)
+        target = worker(URL2, worker_id="w2")
+        plan = plan_probe_slot(target, existing, now=150.0)
+        operation = probe_operation_from_plan(
+            target, plan, existing, chrome_executable=CHROME, now=150.0
+        )
+        operation.state = ProbeMutationState.CLOSE_SUBMITTED
         transport = ChromeUiaProbeWindowTransport(
             chrome_executable=CHROME,
             enabled=True,
             open_timeout_s=0.01,
         )
-        with (
-            patch.object(
-                transport,
-                "_close",
-                return_value={
-                    "closed": True,
-                    "absent": False,
-                    "ambiguous": False,
-                    "detail": "close requested",
-                },
-            ),
-            patch.object(
-                transport,
-                "_find",
-                return_value={
-                    "count": 1,
-                    "matches": [{"window_handle": 123, "browser_pid": 456}],
-                },
-            ),
-        ):
-            out = transport.execute(plan, existing=existing)
+        out = transport.open_authorized(operation)
         self.assertFalse(out.changed)
-        self.assertTrue(out.side_effect_possible)
-        self.assertIn("absence was not proven", out.detail)
+        self.assertFalse(out.side_effect_possible)
+        self.assertIn("OPEN authority was not durably submitted", out.detail)
         popen.assert_not_called()
+
+    def test_powershell_helpers_do_not_assign_read_only_pid_automatic_variable(self):
+        for script in (_FIND_SCRIPT, _CLOSE_SCRIPT):
+            self.assertNotRegex(script, r"(?im)^\s*\$pid\s*=")
+        self.assertIn("$browserPid=", _FIND_SCRIPT)
 
 
 if __name__ == "__main__":

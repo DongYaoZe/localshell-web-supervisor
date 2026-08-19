@@ -14,6 +14,9 @@ from .models import (
     NetworkObservation,
     PageCapabilityKind,
     PageCapabilityRecord,
+    ProbeMutationKind,
+    ProbeMutationOperation,
+    ProbeMutationState,
     ProbeWindowSlotBinding,
     ReconciliationRecord,
     SupervisorState,
@@ -22,6 +25,12 @@ from .models import (
     WorkerRecord,
     WorkerStatus,
     WorkerWindowBinding,
+)
+from .probe_ops import (
+    UNRESOLVED_PROBE_MUTATION_STATES,
+    ProbeMutationObservation,
+    decide_probe_reconciliation,
+    slot_from_snapshot,
 )
 
 OBSERVATION_RETENTION_PER_ENTITY = 2000
@@ -826,6 +835,425 @@ class Registry:
             ).fetchall()
         return [self.get_page_capability(row["capability_id"]) for row in rows]
 
+    @staticmethod
+    def _probe_operation_payload(operation: ProbeMutationOperation) -> str:
+        payload = asdict(operation)
+        payload["kind"] = operation.kind.value
+        payload["state"] = operation.state.value
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    def get_probe_mutation_operation(self, operation_id: str) -> ProbeMutationOperation:
+        row = self._conn.execute(
+            "SELECT payload_json FROM probe_mutation_operations WHERE operation_id = ?",
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown probe mutation operation: {operation_id}")
+        payload = json.loads(row["payload_json"])
+        payload["kind"] = ProbeMutationKind(payload["kind"])
+        payload["state"] = ProbeMutationState(payload["state"])
+        return ProbeMutationOperation(**payload)
+
+    def unresolved_probe_mutation_operation(self) -> ProbeMutationOperation | None:
+        states = tuple(state.value for state in UNRESOLVED_PROBE_MUTATION_STATES)
+        placeholders = ",".join("?" for _ in states)
+        row = self._conn.execute(
+            f"""SELECT operation_id FROM probe_mutation_operations
+                WHERE state IN ({placeholders})
+                ORDER BY created_at DESC LIMIT 1""",
+            states,
+        ).fetchone()
+        return self.get_probe_mutation_operation(row["operation_id"]) if row is not None else None
+
+    def probe_mutation_operations(self, *, limit: int = 100) -> list[ProbeMutationOperation]:
+        rows = self._conn.execute(
+            """SELECT operation_id FROM probe_mutation_operations
+               ORDER BY created_at DESC, operation_id LIMIT ?""",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        return [self.get_probe_mutation_operation(row["operation_id"]) for row in rows]
+
+    @staticmethod
+    def _probe_slot_snapshot_matches(
+        slot: ProbeWindowSlotBinding | None,
+        snapshot: dict[str, object] | None,
+    ) -> bool:
+        prior = slot_from_snapshot(snapshot)
+        return slot == prior
+
+    def arm_probe_mutation_operation(
+        self,
+        operation: ProbeMutationOperation,
+    ) -> ProbeMutationOperation:
+        """Atomically persist the global probe-mutation fence before mutation authority exists."""
+        if operation.state != ProbeMutationState.ARMED:
+            raise ValueError("probe mutation must be ARMED before durable recording")
+        if not operation.operation_id.strip() or not operation.nonce.strip():
+            raise ValueError("probe mutation requires operation id and nonce")
+        if not operation.slot_id.strip() or not operation.owner_token.strip():
+            raise ValueError("probe mutation requires slot id and owner token")
+        if not operation.expected_chrome_executable.strip():
+            raise ValueError("probe mutation requires an expected Chrome executable")
+        if operation.kind != ProbeMutationKind.CLOSE and not operation.expected_actual_url.strip():
+            raise ValueError("OPEN/ROTATE mutation requires an expected tagged target")
+
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            task_row = self._conn.execute(
+                "SELECT task_id FROM tasks WHERE task_id = ?", (operation.target_task_id,)
+            ).fetchone()
+            if task_row is None:
+                raise KeyError(f"unknown task: {operation.target_task_id}")
+            worker_row = self._conn.execute(
+                "SELECT task_id, status, conversation_url FROM workers WHERE worker_id = ?",
+                (operation.target_worker_id,),
+            ).fetchone()
+            if worker_row is None:
+                raise KeyError(f"unknown worker: {operation.target_worker_id}")
+            if worker_row["task_id"] != operation.target_task_id:
+                raise ValueError("probe mutation worker belongs to a different task")
+            if worker_row["status"] != WorkerStatus.PARKED.value:
+                raise ValueError("probe mutation requires a parked target worker")
+            if str(worker_row["conversation_url"]).rstrip("/") != operation.target_conversation_url.rstrip("/"):
+                raise ValueError("probe mutation target URL no longer matches the worker")
+
+            states = tuple(state.value for state in UNRESOLVED_PROBE_MUTATION_STATES)
+            placeholders = ",".join("?" for _ in states)
+            unresolved = self._conn.execute(
+                f"""SELECT operation_id FROM probe_mutation_operations
+                    WHERE state IN ({placeholders}) LIMIT 1""",
+                states,
+            ).fetchone()
+            if unresolved is not None:
+                raise RuntimeError(
+                    f"unresolved probe mutation already exists: {unresolved['operation_id']}"
+                )
+
+            slot_rows = self._conn.execute(
+                "SELECT slot_id FROM probe_window_slots ORDER BY slot_id"
+            ).fetchall()
+            if len(slot_rows) > 1:
+                raise RuntimeError("multiple durable probe slots require reconciliation")
+            current = None
+            if slot_rows:
+                current = self.get_probe_window_slot(str(slot_rows[0]["slot_id"]))
+
+            if operation.kind == ProbeMutationKind.OPEN:
+                if operation.prior_slot is not None or current is not None:
+                    raise RuntimeError("OPEN mutation requires no existing durable probe slot")
+            else:
+                if operation.prior_slot is None:
+                    raise ValueError("ROTATE/CLOSE mutation requires a prior slot snapshot")
+                if not self._probe_slot_snapshot_matches(current, operation.prior_slot):
+                    raise RuntimeError("durable probe slot changed before mutation could be armed")
+
+            self._conn.execute(
+                """INSERT INTO probe_mutation_operations
+                   (operation_id, nonce, kind, state, slot_id, target_task_id,
+                    target_worker_id, created_at, updated_at, payload_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    operation.operation_id,
+                    operation.nonce,
+                    operation.kind.value,
+                    operation.state.value,
+                    operation.slot_id,
+                    operation.target_task_id,
+                    operation.target_worker_id,
+                    operation.created_at,
+                    operation.updated_at,
+                    self._probe_operation_payload(operation),
+                ),
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        return self.get_probe_mutation_operation(operation.operation_id)
+
+    def _save_probe_mutation_operation(
+        self,
+        operation: ProbeMutationOperation,
+        *,
+        commit: bool = True,
+    ) -> ProbeMutationOperation:
+        cursor = self._conn.execute(
+            """UPDATE probe_mutation_operations
+               SET state = ?, updated_at = ?, payload_json = ?
+               WHERE operation_id = ?""",
+            (
+                operation.state.value,
+                operation.updated_at,
+                self._probe_operation_payload(operation),
+                operation.operation_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            if commit:
+                self._conn.rollback()
+            raise KeyError(f"unknown probe mutation operation: {operation.operation_id}")
+        if commit:
+            self._conn.commit()
+            return self.get_probe_mutation_operation(operation.operation_id)
+        return operation
+
+    def authorize_probe_close(
+        self,
+        operation_id: str,
+        *,
+        now: float | None = None,
+    ) -> ProbeMutationOperation:
+        """Persist CLOSE intent; only the returned record grants one exact-close attempt."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            operation = self.get_probe_mutation_operation(operation_id)
+            if operation.kind not in {ProbeMutationKind.ROTATE, ProbeMutationKind.CLOSE}:
+                raise RuntimeError("probe operation does not contain a CLOSE phase")
+            if operation.state != ProbeMutationState.ARMED:
+                raise RuntimeError(f"probe operation {operation_id} is not ARMED")
+            operation.state = ProbeMutationState.CLOSE_SUBMITTED
+            operation.updated_at = time.time() if now is None else float(now)
+            self._save_probe_mutation_operation(operation, commit=False)
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        return self.get_probe_mutation_operation(operation_id)
+
+    def authorize_probe_open(
+        self,
+        operation_id: str,
+        *,
+        now: float | None = None,
+    ) -> ProbeMutationOperation:
+        """Persist OPEN intent; only the returned record grants one launch attempt."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            operation = self.get_probe_mutation_operation(operation_id)
+            allowed = (
+                operation.kind == ProbeMutationKind.OPEN
+                and operation.state == ProbeMutationState.ARMED
+            ) or (
+                operation.kind == ProbeMutationKind.ROTATE
+                and operation.state == ProbeMutationState.READY_TO_OPEN
+            )
+            if not allowed:
+                raise RuntimeError(f"probe operation {operation_id} is not ready for OPEN")
+            operation.state = ProbeMutationState.OPEN_SUBMITTED
+            operation.resume_state = None
+            operation.updated_at = time.time() if now is None else float(now)
+            self._save_probe_mutation_operation(operation, commit=False)
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        return self.get_probe_mutation_operation(operation_id)
+
+    def _validate_probe_completion_binding(
+        self,
+        operation: ProbeMutationOperation,
+        binding: ProbeWindowSlotBinding,
+    ) -> None:
+        if binding.slot_id != operation.slot_id:
+            raise ValueError("completion binding uses the wrong probe slot")
+        if binding.owner_token != operation.owner_token:
+            raise ValueError("completion binding uses the wrong ownership token")
+        if binding.target_worker_id != operation.target_worker_id:
+            raise ValueError("completion binding uses the wrong target worker")
+        if binding.target_conversation_url.rstrip("/") != operation.target_conversation_url.rstrip("/"):
+            raise ValueError("completion binding uses the wrong target conversation")
+        if binding.actual_url.rstrip("/") != operation.expected_actual_url.rstrip("/"):
+            raise ValueError("completion binding does not match the expected tagged target")
+        if binding.chrome_executable.casefold() != operation.expected_chrome_executable.casefold():
+            raise ValueError("completion binding executable identity changed")
+        if binding.window_handle <= 0 or binding.browser_pid <= 0:
+            raise ValueError("completion binding requires positive HWND and browser PID")
+
+    def _complete_probe_mutation_locked(
+        self,
+        operation: ProbeMutationOperation,
+        *,
+        binding: ProbeWindowSlotBinding | None = None,
+        ts: float,
+        outcome: str | None = None,
+        reconciled: bool = False,
+    ) -> None:
+        """Publish slot/close plus COMPLETED while caller holds BEGIN IMMEDIATE."""
+        if operation.kind in {ProbeMutationKind.OPEN, ProbeMutationKind.ROTATE}:
+            if binding is None:
+                raise ValueError("OPEN/ROTATE completion requires an exact observed binding")
+            self._validate_probe_completion_binding(operation, binding)
+        elif binding is not None:
+            raise ValueError("CLOSE completion must not provide a replacement binding")
+
+        slot_rows = self._conn.execute(
+            "SELECT slot_id FROM probe_window_slots ORDER BY slot_id"
+        ).fetchall()
+        if len(slot_rows) > 1:
+            raise RuntimeError("multiple durable probe slots require reconciliation")
+        current = None
+        if slot_rows:
+            current = self.get_probe_window_slot(str(slot_rows[0]["slot_id"]))
+
+        if operation.kind == ProbeMutationKind.OPEN:
+            if current is not None:
+                raise RuntimeError("durable probe slot appeared while OPEN was unresolved")
+        else:
+            if not self._probe_slot_snapshot_matches(current, operation.prior_slot):
+                raise RuntimeError("durable probe slot changed while mutation was unresolved")
+
+        if operation.kind == ProbeMutationKind.CLOSE:
+            self._conn.execute(
+                "DELETE FROM probe_window_slots WHERE slot_id = ?", (operation.slot_id,)
+            )
+        else:
+            assert binding is not None
+            self._conn.execute(
+                """INSERT INTO probe_window_slots
+                   (slot_id, owner_token, target_worker_id, target_conversation_url,
+                    actual_url, window_handle, browser_pid, chrome_executable, source,
+                    bound_at, observed_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(slot_id) DO UPDATE SET
+                       owner_token=excluded.owner_token,
+                       target_worker_id=excluded.target_worker_id,
+                       target_conversation_url=excluded.target_conversation_url,
+                       actual_url=excluded.actual_url,
+                       window_handle=excluded.window_handle,
+                       browser_pid=excluded.browser_pid,
+                       chrome_executable=excluded.chrome_executable,
+                       source=excluded.source,
+                       bound_at=excluded.bound_at,
+                       observed_at=excluded.observed_at,
+                       expires_at=excluded.expires_at""",
+                (
+                    binding.slot_id,
+                    binding.owner_token,
+                    binding.target_worker_id,
+                    binding.target_conversation_url,
+                    binding.actual_url,
+                    binding.window_handle,
+                    binding.browser_pid,
+                    binding.chrome_executable,
+                    binding.source,
+                    binding.bound_at,
+                    binding.observed_at,
+                    binding.expires_at,
+                ),
+            )
+
+        operation.state = ProbeMutationState.COMPLETED
+        operation.resume_state = None
+        operation.updated_at = ts
+        if outcome is not None:
+            operation.last_outcome = str(outcome)[:200]
+        if reconciled:
+            operation.reconcile_attempts += 1
+            operation.last_reconcile_at = ts
+        operation.last_error = None
+        self._save_probe_mutation_operation(operation, commit=False)
+
+    def complete_probe_mutation_operation(
+        self,
+        operation_id: str,
+        *,
+        binding: ProbeWindowSlotBinding | None = None,
+        now: float | None = None,
+        outcome: str | None = None,
+    ) -> ProbeMutationOperation:
+        """Publish a direct transport result only after the matching durable authority."""
+        ts = time.time() if now is None else float(now)
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            operation = self.get_probe_mutation_operation(operation_id)
+            if operation.state == ProbeMutationState.COMPLETED:
+                self._conn.commit()
+                return operation
+            if operation.state not in UNRESOLVED_PROBE_MUTATION_STATES:
+                raise RuntimeError(f"probe operation {operation_id} is already terminal")
+            if operation.kind in {ProbeMutationKind.OPEN, ProbeMutationKind.ROTATE}:
+                if operation.state != ProbeMutationState.OPEN_SUBMITTED:
+                    raise RuntimeError(
+                        "replacement binding may complete only after durable OPEN authority"
+                    )
+            elif operation.state != ProbeMutationState.CLOSE_SUBMITTED:
+                raise RuntimeError("CLOSE may complete only after durable CLOSE authority")
+            self._complete_probe_mutation_locked(
+                operation,
+                binding=binding,
+                ts=ts,
+                outcome=outcome,
+                reconciled=False,
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        return self.get_probe_mutation_operation(operation_id)
+
+    def fail_probe_mutation_operation(
+        self,
+        operation_id: str,
+        *,
+        reason: str,
+        now: float | None = None,
+    ) -> ProbeMutationOperation:
+        operation = self.get_probe_mutation_operation(operation_id)
+        if operation.state != ProbeMutationState.ARMED:
+            raise RuntimeError("probe mutation may fail terminally only before mutation authority")
+        operation.state = ProbeMutationState.FAILED
+        operation.last_error = str(reason)[:1000]
+        operation.updated_at = time.time() if now is None else float(now)
+        return self._save_probe_mutation_operation(operation)
+
+    def reconcile_probe_mutation_operation(
+        self,
+        operation_id: str,
+        observation: ProbeMutationObservation,
+    ) -> ProbeMutationOperation:
+        """Apply one read-only observation idempotently to an unresolved operation."""
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-read under the write lock. Otherwise an observation made against ARMED could
+            # overwrite a concurrently persisted OPEN_SUBMITTED/CLOSE_SUBMITTED authority.
+            operation = self.get_probe_mutation_operation(operation_id)
+            if operation.state == ProbeMutationState.COMPLETED:
+                self._conn.commit()
+                return operation
+            if operation.state not in UNRESOLVED_PROBE_MUTATION_STATES:
+                self._conn.commit()
+                return operation
+            decision = decide_probe_reconciliation(operation, observation)
+            if decision.next_state == ProbeMutationState.COMPLETED:
+                self._complete_probe_mutation_locked(
+                    operation,
+                    binding=decision.adopt_binding,
+                    ts=max(operation.updated_at, float(observation.observed_at)),
+                    outcome=decision.outcome.value,
+                    reconciled=True,
+                )
+            else:
+                if decision.next_state == ProbeMutationState.RECONCILE_REQUIRED:
+                    if operation.state != ProbeMutationState.RECONCILE_REQUIRED:
+                        operation.resume_state = operation.state.value
+                    operation.last_error = decision.reason[:1000]
+                else:
+                    operation.resume_state = None
+                    operation.last_error = None
+                operation.state = decision.next_state
+                operation.updated_at = max(
+                    operation.updated_at, float(observation.observed_at)
+                )
+                operation.reconcile_attempts += 1
+                operation.last_reconcile_at = float(observation.observed_at)
+                operation.last_outcome = decision.outcome.value
+                self._save_probe_mutation_operation(operation, commit=False)
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+        return self.get_probe_mutation_operation(operation_id)
+
     def bind_probe_window_slot(
         self,
         slot_id: str,
@@ -841,49 +1269,59 @@ class Registry:
         observed_at: float | None = None,
         ttl_s: float = 120.0,
     ) -> ProbeWindowSlotBinding:
-        worker = self.get_worker(target_worker_id)
-        if worker.status != WorkerStatus.PARKED:
-            raise ValueError("probe slot binding requires a parked worker")
-        other_slot = self._conn.execute(
-            "SELECT slot_id FROM probe_window_slots WHERE slot_id <> ? LIMIT 1", (slot_id,)
-        ).fetchone()
-        if other_slot is not None:
-            raise ValueError(
-                f"0.6 supports only one durable probe slot; existing slot is {other_slot['slot_id']}"
-            )
-        if not slot_id.strip() or not owner_token.strip():
-            raise ValueError("probe slot requires non-empty slot id and owner token")
-        if int(window_handle) <= 0 or int(browser_pid) <= 0:
-            raise ValueError("probe slot requires positive HWND and browser PID")
-        if not chrome_executable.strip():
-            raise ValueError("probe slot requires a Chrome executable path")
-        if worker.conversation_url.rstrip("/") != target_conversation_url.rstrip("/"):
-            raise ValueError("probe slot target URL must match the registered worker URL")
         observed_at = time.time() if observed_at is None else float(observed_at)
         ttl_s = max(1.0, float(ttl_s))
-        existing = self.get_probe_window_slot(slot_id)
-        bound_at = existing.bound_at if existing else observed_at
-        self._conn.execute(
-            """INSERT INTO probe_window_slots
-               (slot_id, owner_token, target_worker_id, target_conversation_url, actual_url,
-                window_handle, browser_pid, chrome_executable, source, bound_at, observed_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(slot_id) DO UPDATE SET
-                   owner_token=excluded.owner_token,
-                   target_worker_id=excluded.target_worker_id,
-                   target_conversation_url=excluded.target_conversation_url,
-                   actual_url=excluded.actual_url,
-                   window_handle=excluded.window_handle,
-                   browser_pid=excluded.browser_pid,
-                   chrome_executable=excluded.chrome_executable,
-                   source=excluded.source,
-                   observed_at=excluded.observed_at,
-                   expires_at=excluded.expires_at""",
-            (slot_id, owner_token, target_worker_id, target_conversation_url, actual_url,
-             int(window_handle), int(browser_pid), chrome_executable, source, bound_at,
-             observed_at, observed_at + ttl_s),
-        )
-        self._conn.commit()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            unresolved = self.unresolved_probe_mutation_operation()
+            if unresolved is not None:
+                raise RuntimeError(
+                    f"probe slot is fenced by unresolved mutation {unresolved.operation_id}"
+                )
+            worker = self.get_worker(target_worker_id)
+            if worker.status != WorkerStatus.PARKED:
+                raise ValueError("probe slot binding requires a parked worker")
+            other_slot = self._conn.execute(
+                "SELECT slot_id FROM probe_window_slots WHERE slot_id <> ? LIMIT 1", (slot_id,)
+            ).fetchone()
+            if other_slot is not None:
+                raise ValueError(
+                    f"CWS supports only one durable probe slot; existing slot is {other_slot['slot_id']}"
+                )
+            if not slot_id.strip() or not owner_token.strip():
+                raise ValueError("probe slot requires non-empty slot id and owner token")
+            if int(window_handle) <= 0 or int(browser_pid) <= 0:
+                raise ValueError("probe slot requires positive HWND and browser PID")
+            if not chrome_executable.strip():
+                raise ValueError("probe slot requires a Chrome executable path")
+            if worker.conversation_url.rstrip("/") != target_conversation_url.rstrip("/"):
+                raise ValueError("probe slot target URL must match the registered worker URL")
+            existing = self.get_probe_window_slot(slot_id)
+            bound_at = existing.bound_at if existing else observed_at
+            self._conn.execute(
+                """INSERT INTO probe_window_slots
+                   (slot_id, owner_token, target_worker_id, target_conversation_url, actual_url,
+                    window_handle, browser_pid, chrome_executable, source, bound_at, observed_at, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(slot_id) DO UPDATE SET
+                       owner_token=excluded.owner_token,
+                       target_worker_id=excluded.target_worker_id,
+                       target_conversation_url=excluded.target_conversation_url,
+                       actual_url=excluded.actual_url,
+                       window_handle=excluded.window_handle,
+                       browser_pid=excluded.browser_pid,
+                       chrome_executable=excluded.chrome_executable,
+                       source=excluded.source,
+                       observed_at=excluded.observed_at,
+                       expires_at=excluded.expires_at""",
+                (slot_id, owner_token, target_worker_id, target_conversation_url, actual_url,
+                 int(window_handle), int(browser_pid), chrome_executable, source, bound_at,
+                 observed_at, observed_at + ttl_s),
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
         slot = self.get_probe_window_slot(slot_id)
         assert slot is not None
         return slot
@@ -910,8 +1348,20 @@ class Registry:
         return slot
 
     def clear_probe_window_slot(self, slot_id: str) -> bool:
-        cur = self._conn.execute("DELETE FROM probe_window_slots WHERE slot_id = ?", (slot_id,))
-        self._conn.commit()
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            unresolved = self.unresolved_probe_mutation_operation()
+            if unresolved is not None:
+                raise RuntimeError(
+                    f"probe slot is fenced by unresolved mutation {unresolved.operation_id}"
+                )
+            cur = self._conn.execute(
+                "DELETE FROM probe_window_slots WHERE slot_id = ?", (slot_id,)
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
         return cur.rowcount == 1
 
     def probe_window_slots(self) -> list[ProbeWindowSlotBinding]:
