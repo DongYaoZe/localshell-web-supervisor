@@ -17,14 +17,15 @@ CWS is **observe-first and fail-closed**.
 
 Permitted read-only observation paths include:
 
-- Windows UI Automation/accessibility inspection of a user-explicitly-authorized Chrome tab, matched by exact conversation URL;
+- Windows UI Automation/accessibility inspection of a user-explicitly-authorized normal-Chrome top-level window, matched by exact conversation URL and, when needed, exact HWND;
 - a dedicated CWS-controlled Playwright/browser profile created through ordinary user authentication;
 - bounded DOM/network lifecycle metadata needed to determine liveness and silence.
 
-For Windows UI Automation, CWS transiently reads accessibility text only to derive the
-latest-message signature/error/liveness state. It does **not** read the unsent prompt
-textarea, and `probe-uia` does not return conversation text. Persisted UIA metadata is
-limited to state/signature plus numeric process/element counters needed by the supervisor.
+For read-only Windows UI Automation, CWS transiently reads accessibility text only to derive
+the latest-message signature/error/liveness state. `probe-uia` does not return conversation
+text. Successful observation may persist a short-lived exact-window lease containing only
+worker id, URL, HWND, PID, Chrome executable path, source, and timestamps. HWND leases expire
+quickly because window handles can be recycled.
 
 For LSM high-level browser snapshots, CWS does not persist the recent error/network entry
 payloads; it retains only counts and the bounded state needed for classification.
@@ -38,7 +39,7 @@ CWS must not:
 - reimplement ChatGPT private backend endpoints as the default execution transport;
 - parse private response bodies when timing/status metadata is sufficient for health detection.
 
-A fresh isolated browser that is unauthenticated or blocked by an access-control page is treated as a boundary, not as a challenge to circumvent.
+A fresh isolated browser that is unauthenticated or blocked by an access-control page is treated as a boundary, not as a challenge to circumvent. During 0.5 development the user explicitly authorized one local cookie-clone diagnostic after ordinary login paths failed; it established that the relevant Chrome cookies used v20 App-Bound encryption and were unusable across profiles. No plaintext session token was extracted, and credential migration remains outside the production CWS capability boundary.
 
 ## Recovery safety boundary
 
@@ -61,17 +62,19 @@ Hard fences:
 
 ### Write-ahead external-action fence
 
-Any future external worker mutation must be recorded durably as `ARMED` **before** the
-transport is called. `ARMED`, `SUBMITTED`, and `RECONCILE_REQUIRED` all block another
-attempt for the same task. Registry schema v2 enforces that invariant with a partial unique
-index, so it also holds across racing supervisor processes.
+Any external worker mutation must be recorded durably as `ARMED` **before** the transport is
+called. `ARMED`, `SUBMITTED`, and `RECONCILE_REQUIRED` all block another attempt for the same
+task. Registry schema v2 introduced that partial unique index, so it also holds across racing
+supervisor processes. Schema v3 separately adds short-lived exact-window leases; an expired
+lease blocks the gated UIA transport before draft input and must be refreshed by observation.
 
 A transport exception is treated as an ambiguous side-effect window and becomes
 `RECONCILE_REQUIRED`; it is not permission to retry. Only proof that no external side
 effect occurred may produce terminal `FAILED`. A positive acknowledgement must be tied to
 the same attempt and worker before the duplicate-send lock is released as `ACKNOWLEDGED`.
 
-CWS exposes no production message-sending command and no manual CLI that can fabricate an
+CWS 0.5 contains an experiment-backed exact-window UIA sender/ACK observer, but exposes no
+production message-sending command and no manual CLI that can fabricate an
 acknowledgement in this milestone.
 
 ## Process and machine safety
@@ -81,8 +84,10 @@ acknowledgement in this milestone.
 - Do not terminate unrelated processes. Test-process cleanup must use a unique command line/PID created by the same experiment.
 - Production CWS hosting should be independent of a ChatGPT conversation and should use its own singleton watchdog lease.
 - Resident watchdog shutdown should use the cooperative lease-stop fence; do not depend on LSM process-tree kill semantics.
-- Page-close/RAM experiments must use dedicated harmless workers until strong authenticated evidence proves that closing a page cannot damage a live task.
+- Strong authenticated evidence now proves close/reopen continuity for pure model generation and one harmless Local Shell MCP job in an exact-bound disposable window. This does not prove arbitrary side-effecting tools are idempotent.
+- Production pool policy still pins live LSM work, active generation, and ambiguous recovery states as `DO_NOT_CLOSE`; capability evidence does not authorize automatic eviction.
 - Anonymous/localhost browser experiments and copied authentication state cannot satisfy the page-close safety gate.
+- Reuse one exact-bound experimental window where possible; never bulk-close ambiguous unmarked user windows.
 
 `cws doctor` is intentionally diagnostic-only. It may read registry/LSM schema, local
 workspace/Git state, RAM/process working-set counters, watchdog lease state, and optionally

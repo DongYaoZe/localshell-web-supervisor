@@ -44,7 +44,7 @@ def default_db_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.4 control plane)")
+    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.5 control plane)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=None, help="registry sqlite path (default: .cws/registry.sqlite3)")
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
@@ -196,6 +196,13 @@ def build_parser() -> argparse.ArgumentParser:
     pool.add_argument("--max-active", type=int, default=4)
     pool.add_argument("--min-free-mib", type=int, default=1024)
     pool.add_argument("--high-memory-fraction", type=float, default=0.85)
+    pool.add_argument(
+        "--page-close-evidence",
+        help=(
+            "optional local PageCloseEvidence JSON; only a passing generation gate enables "
+            "close_allowed advice for already non-live park candidates"
+        ),
+    )
     pool.add_argument("--json", action="store_true")
 
     ram = sub.add_parser("ram-status", help="show system and aggregate Chrome working-set telemetry")
@@ -234,11 +241,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="evaluate JSON evidence for isolated ChatGPT page-close/reopen parking safety",
     )
     lifecycle.add_argument("--file", required=True)
+    lifecycle.add_argument(
+        "--require-tool",
+        action="store_true",
+        help="require the stronger live Local Shell tool-execution parking gate",
+    )
     lifecycle.add_argument("--json", action="store_true")
 
     dispatch = sub.add_parser(
         "dispatch-plan",
-        help="dry-run a fenced recovery action; 0.4 ships no ChatGPT mutation transport",
+        help="dry-run a fenced recovery action; 0.5 production dispatch remains disabled",
     )
     dispatch.add_argument("task_id")
     dispatch.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
@@ -296,8 +308,32 @@ def _refresh_uia(registry: Registry, task_id: str, probe: ChromeUiaProbe):
         raise UiaProbeUnavailable("task has no current conversation worker")
     worker = registry.get_worker(task.current_worker_id)
     previous = registry.latest_browser_observation(worker.worker_id)
-    obs = probe.observe(worker, previous=previous)
+    binding = registry.get_worker_window_binding(worker.worker_id, require_fresh=True)
+    obs = probe.observe(
+        worker,
+        previous=previous,
+        expected_hwnd=binding.window_handle if binding else None,
+    )
     registry.record_browser_observation(obs)
+    raw = obs.raw or {}
+    window_handle = raw.get("window_handle")
+    browser_pid = raw.get("browser_pid")
+    if (
+        probe.chrome_executable
+        and obs.url
+        and window_handle is not None
+        and browser_pid is not None
+    ):
+        registry.bind_worker_window(
+            worker.worker_id,
+            window_handle=int(window_handle),
+            browser_pid=int(browser_pid),
+            chrome_executable=probe.chrome_executable,
+            conversation_url=obs.url,
+            source=str(raw.get("source") or "windows_uia_chrome"),
+            observed_at=obs.observed_at,
+            ttl_s=max(15.0, probe.timeout_s * 4.0),
+        )
     return obs
 
 
@@ -716,11 +752,26 @@ def main(argv: list[str] | None = None) -> int:
                 browser = registry.latest_browser_observation(task.current_worker_id)
                 lsm = _refresh_lsm(registry, task.task_id, adapter)
                 pool_rows.append((task, worker, browser, lsm))
+            page_close_capability = False
+            if args.page_close_evidence:
+                evidence_payload = _read_json_file(args.page_close_evidence)
+                if not isinstance(evidence_payload, dict):
+                    raise ValueError("page-close evidence JSON must be an object")
+                capability = evaluate_page_close_evidence(PageCloseEvidence(**evidence_payload))
+                if not capability.generation_parking_safe:
+                    raise ValueError(
+                        "page-close evidence does not satisfy the generation gate: "
+                        + ", ".join(capability.blockers)
+                    )
+                page_close_capability = True
             policy = BrowserPoolPolicy(
                 max_active_workers=max(1, int(args.max_active)),
                 min_available_bytes=max(0, int(args.min_free_mib)) * 1024 * 1024,
                 high_memory_fraction=min(1.0, max(0.0, float(args.high_memory_fraction))),
-                page_close_experiment_passed=False,
+                # Capability is explicit deployment evidence, never a release-wide constant.
+                # It affects already non-live PARK_CANDIDATE advice only; live/ambiguous work
+                # remains pinned by classify_worker_for_pool regardless of this flag.
+                page_close_experiment_passed=page_close_capability,
             )
             plan = plan_browser_pool(
                 pool_rows,
@@ -829,16 +880,29 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(payload, dict):
                 raise ValueError("page-close evidence JSON must be an object")
             evaluation = evaluate_page_close_evidence(PageCloseEvidence(**payload))
+            required_safe = (
+                evaluation.tool_execution_parking_safe
+                if args.require_tool
+                else evaluation.generation_parking_safe
+            )
             if args.json:
-                _print_json(asdict(evaluation))
+                output = asdict(evaluation)
+                output["required_gate"] = "tool_execution" if args.require_tool else "generation"
+                output["required_gate_safe"] = required_safe
+                _print_json(output)
             else:
                 print(
-                    f"parking_safe={str(evaluation.parking_safe).lower()}  "
+                    f"generation_parking_safe={str(evaluation.generation_parking_safe).lower()}  "
+                    f"tool_execution_parking_safe={str(evaluation.tool_execution_parking_safe).lower()}  "
+                    f"required={'tool_execution' if args.require_tool else 'generation'}  "
                     f"{evaluation.conclusion}"
                 )
-                for blocker in evaluation.blockers:
+                selected_blockers = (
+                    evaluation.tool_blockers if args.require_tool else evaluation.blockers
+                )
+                for blocker in selected_blockers:
                     print(f"blocker: {blocker}")
-            return 0 if evaluation.parking_safe else 8
+            return 0 if required_safe else 8
 
         if args.command == "dispatch-plan":
             previous = registry.latest_reconciliation(args.task_id)

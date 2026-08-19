@@ -54,6 +54,22 @@ class WorkerRecord:
 
 
 @dataclass(slots=True)
+class WorkerWindowBinding:
+    worker_id: str
+    window_handle: int
+    browser_pid: int
+    chrome_executable: str
+    conversation_url: str
+    source: str
+    bound_at: float
+    observed_at: float
+    expires_at: float
+
+    def is_fresh(self, *, now: float) -> bool:
+        return self.expires_at > float(now)
+
+
+@dataclass(slots=True)
 class BrowserObservation:
     worker_id: str
     observed_at: float

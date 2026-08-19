@@ -51,7 +51,7 @@ class DoctorTests(unittest.TestCase):
                 self.assertEqual(checks["playwright.optional"].status, DoctorStatus.WARN)
                 self.assertEqual(checks["watchdog.lease"].status, DoctorStatus.WARN)
                 self.assertEqual(checks["recovery.transport"].status, DoctorStatus.PASS)
-                self.assertIn("disabled", checks["recovery.transport"].detail)
+                self.assertIn("gated", checks["recovery.transport"].detail)
             finally:
                 registry.close()
 
@@ -93,6 +93,45 @@ class DoctorTests(unittest.TestCase):
                     report = run_doctor(registry, task_id="t1", probe_uia=False)
                 observe.assert_not_called()
                 self.assertNotEqual(report.overall, DoctorStatus.FAIL)
+                checks = {check.name: check for check in report.checks}
+                self.assertEqual(checks["task.window_binding"].status, DoctorStatus.PASS)
+                self.assertIn("no exact-window lease", checks["task.window_binding"].detail)
+            finally:
+                registry.close()
+
+    def test_stale_window_binding_is_a_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Registry(Path(td) / "registry.sqlite3")
+            work = Path(td) / "work"
+            work.mkdir()
+            try:
+                task = registry.register_task(
+                    task_id="t1",
+                    project="p",
+                    objective="obj",
+                    cwd=str(work),
+                    conversation_url="https://chatgpt.com/c/fixture",
+                )
+                worker = registry.get_worker(task.current_worker_id)
+                registry.bind_worker_window(
+                    worker.worker_id,
+                    window_handle=123,
+                    browser_pid=456,
+                    chrome_executable=r"C:\Chrome\chrome.exe",
+                    conversation_url=worker.conversation_url,
+                    observed_at=900.0,
+                    ttl_s=10.0,
+                )
+                with (
+                    patch("cws.doctor.detect_lsm_state_dir", return_value=None),
+                    patch("cws.doctor.observe_system_memory", return_value=system_memory()),
+                    patch("cws.doctor.observe_windows_process_group", return_value=chrome_memory()),
+                    patch("cws.doctor.time.time", return_value=NOW),
+                ):
+                    report = run_doctor(registry, task_id="t1", probe_uia=False)
+                checks = {check.name: check for check in report.checks}
+                self.assertEqual(checks["task.window_binding"].status, DoctorStatus.WARN)
+                self.assertIn("stale", checks["task.window_binding"].detail)
             finally:
                 registry.close()
 

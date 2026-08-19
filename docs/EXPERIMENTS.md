@@ -1,110 +1,145 @@
 # Isolated browser experiments
 
-CWS does not use the user's active ChatGPT conversation as an experimental surface. Experiments that can change page or message state must use a dedicated disposable browser profile/conversation.
+CWS experiments that can alter a ChatGPT page or submit a turn use disposable conversations/windows and exact identity fences. The user's active work conversation is excluded explicitly.
 
-## Current prerequisite state
+This document records the evidence behind the 0.5 capability boundary. It is not a recipe to bypass authentication.
 
-A dedicated persistent profile named `cws-disposable-v4` can be opened safely by Local Shell MCP without copying cookies, storage state, passwords, or tokens from the normal Chrome profile.
+## Authentication-path result
 
-At the time this document was written, that profile was **not authenticated**. The anonymous ChatGPT page could be observed and exercised with normal Playwright/UI actions, but it was not accepted as evidence for authenticated page-close/reopen semantics.
+A dedicated persistent Playwright profile (`cws-disposable-v4`) could be created without copied authentication, but normal login was not usable in that browser on this machine: Google rejected the browser and the phone-number path remained blocked by repeated Cloudflare checks.
 
-The missing prerequisite for the authenticated lifecycle experiment is deliberately small and explicit:
+The user then explicitly authorized a cookie-copy experiment. CWS performed a one-time local diagnostic rather than adding product functionality:
 
-1. open the dedicated `cws-disposable-v4` browser window;
-2. the user signs in through the normal ChatGPT login UI in that window;
-3. do not export/copy storage state or cookies to another browser;
-4. create a disposable conversation specifically for the experiment;
-5. only then run the page-close/reopen experiment.
+- the locked Chrome cookie database was copied from a temporary Windows VSS snapshot without stopping the user's Chrome;
+- the temporary shadow copy was deleted and verified absent;
+- the offline clone was pruned to ChatGPT/OpenAI-domain rows only;
+- no cookie value was printed or sent anywhere;
+- the relevant source cookies, including auth/session/token-like rows, all used Chrome `v20` App-Bound encryption;
+- opening the cloned profile in the same installed Google Chrome discarded the usable auth cookies and remained logged out;
+- no plaintext session token extraction/decryption was attempted.
 
-The current user's normal Chrome tabs are not part of this procedure.
+Conclusion: **cookie/profile migration is a NO-GO architecture path** for CWS. Production code still has no cookie-export/import feature.
 
-## Anonymous action-adapter probe
+## Preferred authenticated isolation: disposable normal-Chrome window
 
-An anonymous isolated page was used only to test selector/interaction assumptions. No message was successfully submitted.
+A safer path worked: create a new top-level window in the already authenticated normal Google Chrome profile. It naturally uses the user's ordinary session without moving credentials.
 
-Observed lessons:
+Desktop UI Automation proved the disposable window could be distinguished from the user's active conversation by:
 
-- a snapshot may expose an invisible fallback `textarea` even when the visible editor is a `div[role=textbox]`;
-- snapshot element refs can become stale after a React/modal rerender;
-- `fill()` can report success without producing the application-level editor events required to expose a Send control;
-- `Enter` cannot be assumed to submit;
-- a hard-coded `button[data-testid=send-button]` selector was not positively present on this anonymous page.
+- exact conversation/project URL;
+- exact HWND;
+- Chrome PID and expected Google Chrome executable;
+- signed-in profile/account controls;
+- absence of login/signup controls.
 
-Therefore CWS core must not hard-code one ChatGPT selector or treat a successful DOM mutation/click call as action acknowledgement. A transport provider must supply positive pre-action selector proof and positive post-action acknowledgement.
+The experiment also exposed a bug in the old probe: `Get-Process(...).MainWindowHandle` does not enumerate every top-level window of a multi-window Chrome browser process. 0.5 therefore enumerates Desktop-root `Chrome_WidgetWin_1` windows and rejects ambiguous URL matches unless an exact HWND is supplied.
 
-## Authenticated page-close/reopen experiment
+Stable controls observed on the authenticated page included:
 
-The experiment should use one harmless disposable conversation and one nonce-bearing task whose completion is unambiguous. It must record evidence at three phases:
+- composer: `AutomationId=prompt-textarea`;
+- submit: `AutomationId=composer-submit-button`.
 
-### Phase A: before close
+A reversible draft-only probe confirmed that accessibility input can trigger application editor state without submitting a turn.
 
-Record:
+## Generation close/reopen evidence
 
-- exact conversation URL;
-- proof this is the dedicated disposable profile;
-- proof the profile is normally authenticated;
-- a browser/message signature;
-- positive generation/execution evidence;
-- the fact that no auth material was copied.
+A disposable conversation was submitted behind the write-ahead action fence and later closed while positive generation/Stop evidence was visible. A fresh process confirmed the experiment window was absent. After a closed interval the same conversation was reopened.
 
-Close the page only after generation is positively active.
+The sanitized evidence showed:
 
-### Phase B: page absent
+- normally authenticated normal Chrome;
+- `existing_profile_disposable_window` isolation;
+- exact experiment window binding and explicit exclusion of the user's active conversation;
+- no auth material copied;
+- close while generation was live;
+- independent progress while the page was absent;
+- same conversation after reopen;
+- completion evidence after reopen;
+- changed content signature;
+- valid signed-in state;
+- no duplicate user turn.
 
-Wait long enough that completion would normally occur. Obtain independent evidence that progress occurred while the page was absent. The exact source can vary by experiment, but it must not be inferred only from elapsed time.
+`cws evaluate-page-close` returned:
 
-### Phase C: reopen
+```text
+generation_parking_safe=true
+```
 
-Reopen the exact conversation URL in the same dedicated profile and record:
+This supports page continuity as a capability, not automatic eviction of arbitrary workers.
 
-- authentication is still valid;
-- same conversation URL/identity;
-- completion evidence is present;
-- message signature advanced;
-- no duplicate user turn appeared.
+## Live Local Shell tool close/reopen evidence
 
-Save the evidence as JSON and run:
+A later bounded experiment strengthened the evidence. Before close, its persisted pre-close record contained:
+
+- a specific tracked Local Shell job id/name;
+- durable job status `running`;
+- positive ChatGPT Stop/generation evidence;
+- exact disposable conversation/window identity;
+- pre-close text hash.
+
+The close harness recorded that the exact experiment window was closed while that job was still running. Durable LSM state later recorded the same job as `succeeded`. After reopening the same conversation, the evidence recorded tool completion and final-response continuity without a duplicate turn.
+
+The strict evaluator therefore returns both:
+
+```text
+generation_parking_safe=true
+tool_execution_parking_safe=true
+```
+
+when run against that D-round evidence, including `--require-tool`.
+
+CWS 0.5 still keeps live LSM work `DO_NOT_CLOSE` in the normal `pool-plan` policy. The reason is architectural rather than lack of browser evidence: a production live-worker eviction path must atomically bind the exact durable LSM job/session state to a fresh worker-window lease and the close action. That dispatcher does not exist yet.
+
+## Action acknowledgement and crash-fence evidence
+
+The write-ahead protocol was exercised repeatedly in disposable authenticated conversations.
+
+Required invariants were observed:
+
+1. `ARMED` existed durably before browser mutation.
+2. Only one unresolved attempt existed for a task.
+3. Positive submit moved the attempt to `SUBMITTED`.
+4. Ambiguous browser-side state was reconciled rather than retried.
+5. Positive evidence tied to the same worker/attempt produced `ACKNOWLEDGED`.
+6. The unresolved lock was released only after terminal proof.
+
+A particularly useful negative case occurred when the UIA adapter entered a draft but did not positively observe Send in time. The attempt became `RECONCILE_REQUIRED`; it was **not replayed**. Accessibility text could see the draft nonce, proving that a raw nonce hit is not enough to claim submission. The disposable draft window was closed and the same conversation reopened; nonce count returned to zero and the conversation hash returned to the pre-action state. Only then was the attempt marked terminal `FAILED`.
+
+The actual 0.5 `ChromeUiaActionTransport` class then passed a fresh acceptance turn:
+
+```text
+ARMED → SUBMITTED → ACKNOWLEDGED
+```
+
+The bounded acknowledgement contained only URL/HWND/PID, generating/idle state, signed-in state, nonce count, text-element count and SHA-256. It returned no conversation text.
+
+## Evidence evaluator
+
+Evidence JSON is local/ignored and can be evaluated with:
 
 ```powershell
 $env:PYTHONPATH = "src"
 python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
+python -m cws evaluate-page-close --file .cws\page-close-evidence.json --require-tool --json
 ```
 
-Only `parking_safe=true` is sufficient evidence to consider enabling live-page parking. Anonymous, localhost, copied-auth, missing-background-progress, duplicate-turn, or same-signature evidence fails closed.
+The generation gate fails closed for anonymous/localhost tests, copied authentication, ambiguous isolation, changed conversation identity, missing background progress, duplicate turns, invalid auth or unchanged signatures.
 
-## Example evidence shape
+The stronger tool gate additionally requires:
 
-```json
-{
-  "experiment_id": "chatgpt-close-reopen-001",
-  "disposable_profile": true,
-  "normally_authenticated": true,
-  "auth_material_copied": false,
-  "pre_close_url": "https://chatgpt.com/c/...",
-  "reopened_url": "https://chatgpt.com/c/...",
-  "pre_close_generating": true,
-  "close_while_live_confirmed": true,
-  "background_progress_observed": true,
-  "completion_evidence_after_reopen": true,
-  "same_conversation_after_reopen": true,
-  "duplicate_turn_observed": false,
-  "auth_still_valid_after_reopen": true,
-  "pre_close_signature": "...",
-  "post_reopen_signature": "...",
-  "notes": []
-}
-```
+- tool execution was actually observed;
+- exact tool/job identity was confirmed;
+- the tool was running at close;
+- that tool completed after close;
+- its final response was observable after reopen.
 
-## Action acknowledgement experiment
+## Production conclusion
 
-Before any production transport is enabled, the adapter must demonstrate all of the following in the disposable conversation:
+0.5 changes the evidence status, not the overall safety rule:
 
-1. the action is written durably as `ARMED` before any external side effect;
-2. there is at most one unresolved action per durable task;
-3. a successful submit changes the attempt to `SUBMITTED`;
-4. a transport exception or crash window changes/recovers as `RECONCILE_REQUIRED`, never blind retry;
-5. the observer produces a positive acknowledgement tied to the same worker/attempt;
-6. acknowledgement changes the attempt to `ACKNOWLEDGED` and releases the duplicate-send lock;
-7. killing/restarting the supervisor between submit and acknowledgement does not cause a second turn.
-
-Until that experiment passes on a normally authenticated disposable profile, CWS ships no production ChatGPT action transport.
+- ordinary authenticated page close/reopen continuity: **proven in isolation**;
+- one bounded tracked LSM-job close/reopen continuity: **proven in isolation**;
+- exact-window UIA action/ack primitives: **proven in isolation**;
+- automatic recovery dispatch: **not enabled**;
+- automatic live-LSM page eviction: **not enabled**;
+- private ChatGPT API reconstruction: **still unnecessary and out of scope**.

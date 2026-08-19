@@ -18,6 +18,7 @@ from .models import (
     WorkspaceObservation,
     WorkerRecord,
     WorkerStatus,
+    WorkerWindowBinding,
 )
 
 OBSERVATION_RETENTION_PER_ENTITY = 2000
@@ -534,6 +535,10 @@ class Registry:
                     "UPDATE workers SET status = ?, ended_at = ? WHERE worker_id = ?",
                     (WorkerStatus.SUPERSEDED.value, now, old),
                 )
+                self._conn.execute(
+                    "DELETE FROM worker_window_bindings WHERE worker_id = ?",
+                    (old,),
+                )
             self._conn.execute(
                 "UPDATE tasks SET current_worker_id = ?, updated_at = ? WHERE task_id = ?",
                 (worker_id, now, task_id),
@@ -570,8 +575,115 @@ class Registry:
             "UPDATE workers SET status = ?, ended_at = ? WHERE worker_id = ?",
             (status.value, ended_at, worker_id),
         )
+        if status != WorkerStatus.ACTIVE:
+            self._conn.execute(
+                "DELETE FROM worker_window_bindings WHERE worker_id = ?",
+                (worker_id,),
+            )
         self._conn.commit()
         return self.get_worker(worker_id)
+
+    def bind_worker_window(
+        self,
+        worker_id: str,
+        *,
+        window_handle: int,
+        browser_pid: int,
+        chrome_executable: str,
+        conversation_url: str,
+        source: str = "windows_uia_chrome",
+        observed_at: float | None = None,
+        ttl_s: float = 30.0,
+    ) -> WorkerWindowBinding:
+        """Persist a short-lived exact-window lease for one active worker.
+
+        This is local bookkeeping only. The binding is intentionally ephemeral because HWNDs
+        can be reused after a window closes. Callers must still revalidate URL/process/window
+        identity immediately before any mutation.
+        """
+        worker = self.get_worker(worker_id)
+        if worker.status != WorkerStatus.ACTIVE:
+            raise ValueError("window binding requires an active worker")
+        if int(window_handle) <= 0 or int(browser_pid) <= 0:
+            raise ValueError("window binding requires positive HWND and browser PID")
+        if not str(chrome_executable).strip():
+            raise ValueError("window binding requires a Chrome executable path")
+        if not str(conversation_url).strip():
+            raise ValueError("window binding requires a conversation URL")
+        if str(conversation_url).rstrip("/") != str(worker.conversation_url).rstrip("/"):
+            raise ValueError("window binding URL must exactly match the registered worker URL")
+        observed_at = time.time() if observed_at is None else float(observed_at)
+        ttl_s = max(1.0, float(ttl_s))
+        existing = self.get_worker_window_binding(worker_id)
+        bound_at = existing.bound_at if existing else observed_at
+        expires_at = observed_at + ttl_s
+        self._conn.execute(
+            """INSERT INTO worker_window_bindings
+               (worker_id, window_handle, browser_pid, chrome_executable, conversation_url,
+                source, bound_at, observed_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(worker_id) DO UPDATE SET
+                   window_handle = excluded.window_handle,
+                   browser_pid = excluded.browser_pid,
+                   chrome_executable = excluded.chrome_executable,
+                   conversation_url = excluded.conversation_url,
+                   source = excluded.source,
+                   observed_at = excluded.observed_at,
+                   expires_at = excluded.expires_at""",
+            (
+                worker_id,
+                int(window_handle),
+                int(browser_pid),
+                str(chrome_executable),
+                str(conversation_url),
+                str(source),
+                bound_at,
+                observed_at,
+                expires_at,
+            ),
+        )
+        self._conn.commit()
+        binding = self.get_worker_window_binding(worker_id)
+        assert binding is not None
+        return binding
+
+    def get_worker_window_binding(
+        self,
+        worker_id: str,
+        *,
+        now: float | None = None,
+        require_fresh: bool = False,
+    ) -> WorkerWindowBinding | None:
+        row = self._conn.execute(
+            "SELECT * FROM worker_window_bindings WHERE worker_id = ?",
+            (worker_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        binding = WorkerWindowBinding(
+            worker_id=row["worker_id"],
+            window_handle=int(row["window_handle"]),
+            browser_pid=int(row["browser_pid"]),
+            chrome_executable=row["chrome_executable"],
+            conversation_url=row["conversation_url"],
+            source=row["source"],
+            bound_at=float(row["bound_at"]),
+            observed_at=float(row["observed_at"]),
+            expires_at=float(row["expires_at"]),
+        )
+        if require_fresh and not binding.is_fresh(
+            now=time.time() if now is None else float(now)
+        ):
+            return None
+        return binding
+
+    def clear_worker_window_binding(self, worker_id: str) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM worker_window_bindings WHERE worker_id = ?",
+            (worker_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
 
     def track_job(self, task_id: str, job_id: str) -> None:
         self.get_task(task_id)

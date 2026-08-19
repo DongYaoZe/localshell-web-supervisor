@@ -68,7 +68,7 @@ LSM's high-level Playwright manager already offers persistent profiles, storage 
 
 V0 consumes normalized DOM observations. V1 adds two safe observation routes without changing execution transport:
 
-- exact-URL Windows UI Automation for the user-authorized selected tab in normal Chrome;
+- exact-URL Windows UI Automation for user-authorized top-level windows in normal Chrome; duplicate URL matches fail closed unless an exact HWND is supplied;
 - Network-domain lifecycle metadata for CWS-owned or explicitly exposed CDP pages.
 
 V1 records timestamps for:
@@ -128,14 +128,19 @@ before it can write a success record. On restart, `ARMED` is treated as unresolv
 proof that nothing happened.
 
 Unresolved states are `ARMED`, `SUBMITTED`, and `RECONCILE_REQUIRED`. Registry schema v2
-enforces a partial unique index so one durable task cannot have two unresolved attempts,
+introduced the partial unique index so one durable task cannot have two unresolved attempts,
 even if two supervisor processes race. Transport exceptions or ambiguous outcomes become
 `RECONCILE_REQUIRED`; only a transport-proven no-side-effect outcome may become terminal
 `FAILED`. Positive observation bound to the same attempt/worker is required before
 `ACKNOWLEDGED` releases the duplicate-send lock.
 
-The shipped control plane still has no production ChatGPT mutation transport and no manual
-CLI shortcut that can fabricate acknowledgement. See `ACTIONS.md`.
+0.5 adds schema-v3 short-lived worker-window leases binding worker id to exact conversation
+URL, top-level HWND, Chrome PID/executable, observation time, and expiry. HWND is not durable
+identity: leases expire quickly and are cleared when a worker is superseded/parked/dead. The
+experiment-backed UIA sender/ACK observer requires a fresh binding and revalidates the same
+identity immediately before mutation. It is still gated: no production CLI or dispatcher
+enables it, and there is no manual CLI shortcut that can fabricate acknowledgement. See
+`ACTIONS.md`.
 
 ## RAM / concurrency model
 
@@ -149,17 +154,22 @@ V2 target topology:
 - resource blocking for probes where it does not break ChatGPT state detection;
 - explicit experiments to determine whether closing an executing page affects server-side generation/tool delivery.
 
-Until those experiments exist, CWS must not assume a page is safe to close during execution.
+0.5 now has authenticated ChatGPT-specific evidence for two narrow continuity properties: a
+pure model response continued with no page open, and one harmless Local Shell MCP job that
+was durably running at close later succeeded and resumed correctly after reopen.
 
-The 0.4 `PageCloseEvidence` gate makes the missing proof machine-checkable. Anonymous or
-localhost tests cannot pass. A passing result requires a dedicated normally authenticated
-ChatGPT profile, close-while-live evidence, independent progress while the page is absent,
-the same conversation after reopen, an advanced signature, valid auth, and no duplicate
-user turn. See `EXPERIMENTS.md`.
+`PageCloseEvidence` makes the proof machine-checkable and separates ordinary generation/page
+continuity from live-tool continuity. Evidence may use a normally authenticated dedicated
+profile or an exact-bound disposable top-level window in the existing authenticated profile;
+copied-auth, anonymous, localhost-only, ambiguous-window, duplicate-turn, and unchanged-
+signature cases fail closed. `--require-tool` additionally requires exact job identity,
+running-at-close, completed-after-close, and final-response evidence. See `EXPERIMENTS.md`.
 
 The implemented V2 control layer now makes that uncertainty explicit. `pool-plan` pins
 any worker with live/ambiguous task or LSM evidence and ranks only terminal/queued/blocked
-workers as parking candidates. Page closing is not performed. `PagePool` separately tracks
+workers as parking candidates. In 0.5 those already non-live candidates may report
+`close_allowed=true` because the generation/page evidence gate passed; live LSM and active
+generation remain unconditionally pinned. Page closing is not performed. `PagePool` separately tracks
 ephemeral active/probe page leases, fails closed on capacity instead of evicting a page,
 and rotates parked worker URLs through a small reusable probe queue. Durable worker/task
 identity remains in SQLite, never in the browser page ID.
@@ -214,20 +224,28 @@ the browser-worker identity/action boundary and revalidation rules are proven in
 
 ### V2
 Low-memory worker planning + active/probe page lease pool + parking bookkeeping + RAM
-telemetry. Actual ChatGPT page-close/reopen behavior remains an experiment gate; a local
-harness validates methodology only and does not justify closing a live ChatGPT worker.
+telemetry. The original V2 layer kept ChatGPT page-close as an experiment gate. 0.5 later produced
+authenticated continuity evidence, but the production V2 planner still does not close live
+workers automatically.
 
 ### V3
-Evidence-based NO-GO on private ChatGPT endpoint reimplementation. V3 instead adds a
-mandatory two-sample semantic fence and deterministic dry-run dispatcher. Even a fully
-passing plan has `transport_enabled=false` / `would_dispatch=false`; the shipped code has
-no ChatGPT click/type/continue adapter and `execute_dispatch()` raises. Takeover remains
+Evidence-based NO-GO on private ChatGPT endpoint reimplementation. V3 instead added a
+mandatory two-sample semantic fence and deterministic dry-run dispatcher. At the V3
+milestone, even a fully passing plan had `transport_enabled=false` / `would_dispatch=false`
+and no ChatGPT mutation adapter existed. The later 0.5 milestone adds a gated exact-window
+UIA module without changing the production dry-run/auto-dispatch policy. Takeover remains
 blocked until a separately bound replacement worker and LSM-supported takeover transition
 can be proven safely in isolation. See `V3_DECISION.md` and `V3_SPEC.md`.
 
 ### 0.4 control-plane milestone
 Durable write-ahead action attempts, schema-v2 duplicate-action fencing, strict isolated
-page-close evidence evaluation, and independent watchdog hosting/cooperative stop are
-implemented. These additions strengthen the boundary around future actions; they do not
-enable a production ChatGPT mutation transport. Authenticated action/page-close experiments
-remain gated on a normally authenticated disposable `cws-disposable-v4` profile.
+page-close evidence evaluation, and independent watchdog hosting/cooperative stop were
+implemented.
+
+### 0.5 exact-window evidence milestone
+Authenticated same-profile disposable-window experiments proved pure-generation continuity
+and one harmless live-LSM-job continuity across close/reopen. UIA observation now rejects
+ambiguous same-URL windows unless exact HWND identity is available. Schema v3 adds short-lived
+worker-window leases, and a gated exact-window UIA sender/nonce-hash acknowledgement module
+exists behind the write-ahead fence. Production dispatch and live-worker page eviction remain
+disabled; capability evidence does not override `DO_NOT_CLOSE` policy.

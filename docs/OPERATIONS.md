@@ -1,6 +1,6 @@
 # Operations runbook
 
-This runbook describes how to operate the CWS 0.4 control plane without enabling ChatGPT mutation transport or weakening its authentication boundary.
+This runbook describes how to operate the CWS 0.5 control plane while keeping the experiment-backed UIA mutation module production-gated and preserving the authentication boundary.
 
 ## 1. Preflight
 
@@ -26,7 +26,8 @@ python -m cws --db .cws\registry.sqlite3 doctor --task TASK --uia
 - optional Playwright/CDP capability;
 - resident watchdog lease/PID/stop-fence status;
 - unresolved write-ahead action-fence status for a named task;
-- the fact that ChatGPT mutation transport is disabled;
+- exact-window lease presence/freshness for a named worker;
+- the fact that the 0.5 UIA mutation module is gated and has no production CLI enable path;
 - optional task workspace/Git, LSM logical session/plan/in-flight state, worker status, and exact-URL UIA liveness.
 
 A `WARN` does not necessarily mean the supervisor is broken. For example, no resident watchdog lease is expected before `cws watch` is started. `FAIL` means a requested hard invariant such as a named task/workspace or durable-state schema could not be verified.
@@ -57,7 +58,7 @@ python -m cws inspect TASK --uia
 python -m cws reconcile TASK --uia
 ```
 
-UI Automation is exact-URL matched. CWS does not read or move cookies/tokens/passwords, does not read the unsent prompt textarea, and does not return conversation text from `probe-uia`. It transiently reads accessibility text only to derive a message signature, then persists state/hash metadata rather than the text.
+UI Automation is exact-URL matched over top-level normal-Chrome windows. If more than one window matches the same URL, observation fails closed unless an exact HWND is supplied by the caller. Successful `probe-uia` observations refresh a short-lived local worker-window lease containing only URL/HWND/PID/executable/timestamps. CWS does not return conversation text from `probe-uia`; it transiently reads accessibility text only to derive a signature and persists bounded state/hash metadata.
 
 Optional CDP observation should use a CWS-owned or explicitly exposed DevTools endpoint. Loopback is the default safety boundary:
 
@@ -106,13 +107,12 @@ The detached CWS host and cooperative lease stop avoid depending on that process
 ```powershell
 python -m cws ram-status
 python -m cws pool-plan
+python -m cws pool-plan --page-close-evidence .cws\page-close-evidence.json
 ```
 
-`pool-plan` is advice only. It can mark workers `DO_NOT_CLOSE`, `PARK_CANDIDATE`, or `NO_PAGE`. It never closes a page.
+`pool-plan` is advice only. It can mark workers `DO_NOT_CLOSE`, `PARK_CANDIDATE`, or `NO_PAGE`; it never closes a page. The default is fail-closed. Only an explicitly supplied local `PageCloseEvidence` file that passes the generation gate enables `close_allowed=true` advice for already non-live parking candidates.
 
-A live LSM tool/job/continuation, browser generation, or ambiguous task state always wins over RAM pressure. If all workers are pinned, CWS reports the pressure rather than choosing a live task to sacrifice.
-
-A dedicated persistent profile `cws-disposable-v4` now exists without copied authentication state, but it is currently unauthenticated. Therefore ChatGPT-specific close/reopen remains unproven. Anonymous and localhost tests do not justify closing a live ChatGPT worker.
+A live LSM tool/job/continuation, browser generation, or ambiguous task state still wins over RAM pressure and remains `DO_NOT_CLOSE`. Although one bounded tracked LSM-job close/reopen experiment also passed the stronger tool gate, production live-LSM eviction remains disabled until an eviction dispatcher can atomically bind a specific durable job/session state to a fresh exact-window lease and close operation. If all workers are pinned, CWS reports the pressure rather than choosing a live task to sacrifice.
 
 ## 6. Recovery analysis and action fences
 
@@ -126,7 +126,7 @@ python -m cws reconciliation-history TASK
 
 `dispatch-plan` remains dry-run. It requires two fresh, distinct, sufficiently separated semantic reconciliation fences plus LSM/browser/workspace safety checks. An unresolved write-ahead action (`ARMED`, `SUBMITTED`, or `RECONCILE_REQUIRED`) feeds back into the planner and forces `candidate_ready=false`.
 
-The 0.4 action protocol writes `ARMED` durably before any future external side effect. Registry schema v2 enforces at most one unresolved action per task at the SQLite layer. Ambiguous transport outcomes require reconciliation instead of automatic retry. See `ACTIONS.md`.
+The write-ahead action protocol writes `ARMED` durably before any external side effect. Schema v2 introduced the one-unresolved-action SQLite invariant; schema v3 additionally stores short-lived exact-window leases. Ambiguous transport outcomes require reconciliation instead of automatic retry. See `ACTIONS.md`.
 
 `action-cancel` exists only for an explicit local/operator decision after reconciliation:
 
@@ -136,17 +136,20 @@ python -m cws action-cancel ATTEMPT --reason "human reconciliation completed"
 
 It releases the local duplicate-send lock and does **not** claim to undo any external effect.
 
-Even when `dispatch-plan` says `candidate_ready=true`, ChatGPT mutation transport remains absent and `would_dispatch=false`. There is no CLI command that sends a recovery turn or fabricates acknowledgement.
+Even when `dispatch-plan` says `candidate_ready=true`, `would_dispatch=false`. 0.5 contains a gated exact-window UIA sender/ACK observer for isolated use, but there is no production CLI command that enables it, sends a recovery turn, or fabricates acknowledgement. A fresh worker-window lease is an additional prerequisite, not a substitute for reconciliation fences.
 
 ## 7. Isolated page-close evidence
 
-After the user normally signs into the dedicated `cws-disposable-v4` browser profile and creates a disposable conversation, follow `EXPERIMENTS.md` and evaluate the captured evidence with:
+0.5 completed authenticated same-profile disposable-window experiments for pure generation and one harmless live Local Shell MCP job. Evidence remains local under `.cws/` and can be re-evaluated with:
 
 ```powershell
 python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
+python -m cws evaluate-page-close --file .cws\page-close-evidence.json --require-tool --json
 ```
 
-Only `parking_safe=true` is sufficient to reconsider live-page parking. The evaluator fails closed for anonymous tests, copied authentication, localhost-only evidence, missing background progress, duplicate turns, changed conversation identity, or unchanged message signature.
+The generation gate and live-tool gate are separate. `--require-tool` additionally requires exact tool/job identity, running-at-close, completion-after-close, and final-response evidence. Copied-auth, anonymous, localhost-only, ambiguous-window, missing-progress, duplicate-turn, changed-identity, and unchanged-signature cases fail closed.
+
+A passing gate does **not** enable automatic page closing. `pool-plan` continues to pin live LSM work, active generation, and ambiguous states as `DO_NOT_CLOSE`; it still performs no browser mutation.
 
 ## 8. Upgrade procedure
 
@@ -162,7 +165,7 @@ Before changing CWS or Local Shell MCP:
 
 The direct LSM file adapter is schema-gated. If LSM changes session/job durable formats, CWS should fail closed until the adapter is explicitly updated and tested.
 
-Reconciliation fence semantics are also versioned. Older fence records never silently match a newer fence schema; an upgrade forces fresh reconciliation.
+CWS registry schema v3 is additive over v2 and introduces only short-lived worker-window bindings; stale bindings are never treated as authority. Reconciliation fence semantics are separately versioned. Older fence records never silently match a newer fence schema; an upgrade forces fresh reconciliation.
 
 ## 9. Data handling
 
@@ -170,12 +173,13 @@ The local `.cws/` directory is ignored by Git and may contain the registry, obse
 
 CWS intentionally minimizes persisted browser data:
 
-- no cookie/token/password/session-secret collection;
+- no production cookie/token/password/session-secret collection or migration; the one-time user-authorized v20 cookie-clone diagnostic is not a product feature and its local snapshots must be removed after the experiment;
 - no unsent prompt draft collection;
 - no request/response bodies or authorization headers;
 - no conversation text in `BrowserObservation` or reconciliation records;
 - no changed-path list in recovery fences;
 - UIA/LSM diagnostics retain signatures, state flags, counts, and bounded metadata needed for supervision;
+- worker-window leases retain only worker id, URL, HWND, PID, executable path, source, and timestamps;
 - action attempts persist prompt hashes/nonces and control metadata, not prompt text.
 
 Run `secret_scan` or an equivalent repository secret scan before publishing changes.

@@ -6,7 +6,7 @@ The central rule is:
 
 > **A ChatGPT conversation is a replaceable worker lease. The durable task is not the conversation.**
 
-CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.4 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, and an independent resident-watchdog host. ChatGPT mutation transport is still absent.
+CWS does not use the OpenAI API and does not reimplement ChatGPT's private web protocol. The current 0.5 control plane combines read-only browser evidence, optional network-lifecycle metadata, Local Shell MCP durable telemetry, actual workspace/Git state, low-memory worker planning, semantic reconciliation fences, durable crash-fenced action intents, short-lived exact-window leases, a gated Windows UI Automation action module, and an independent resident-watchdog host. No production CLI enables ChatGPT mutation or automatic live-page closing.
 
 ## Why
 
@@ -20,30 +20,31 @@ CWS separates three truth domains:
 
 Completion and recovery decisions are never based on the Send/Stop button alone.
 
-## Current 0.4 control plane
+## Current 0.5 control plane
 
-The 0.4 control plane remains fail-closed and safe:
+The 0.5 control plane remains fail-closed and safe:
 
 - SQLite task/worker registry;
 - durable task identity independent of conversation URL;
 - direct **read-only** ingestion of Local Shell MCP file-state sessions/plans/jobs;
 - read-only workspace reconciliation (cwd, Git HEAD, dirty/status digest);
 - DOM observation and LSM browser-snapshot normalization boundary;
-- exact-URL, read-only Windows UI Automation observation of an existing authenticated Chrome tab;
+- exact-URL Windows UI Automation observation of existing authenticated Chrome windows, with ambiguity rejected unless an exact HWND is bound;
 - optional CDP Network-domain lifecycle telemetry that stores no headers, cookies, POST data, or response bodies;
 - three-signal stall classification across browser/DOM, optional network lifecycle, and durable LSM state;
 - durable sanitized reconciliation records with deterministic evidence `fence_token`s;
 - system/aggregate Chrome RAM telemetry and conservative active/park/probe planning;
 - mandatory two-sample semantic-fence dispatch planning;
 - durable write-ahead action attempts (`ARMED`, `SUBMITTED`, `RECONCILE_REQUIRED`, `ACKNOWLEDGED`, `FAILED`, `CANCELLED`);
-- SQLite schema v2 database-level uniqueness for unresolved actions, preventing duplicate recovery turns after crashes;
-- an audited `dispatch-plan` command whose ChatGPT mutation transport is still hard-disabled;
+- SQLite schema v3: database-level uniqueness for unresolved actions plus short-lived worker↔HWND/PID/executable/URL leases;
+- an audited `dispatch-plan` command that remains dry-run; the experiment-backed UIA action module is gated and has no production enable flag;
 - deterministic health classifier;
 - low-noise resident attention watchdog with a SQLite singleton lease/heartbeat;
 - independent detached watchdog start/status plus cooperative lease-based stop, without relying on LSM process-tree kill semantics;
-- a strict evidence gate for future authenticated ChatGPT page-close/reopen parking experiments;
+- strict, separate evidence gates for generation/page continuity and live-LSM-tool continuity across close/reopen; both passed isolated authenticated experiments, including one tracked LSM job that was `running` at close and later `succeeded`;
+- a gated exact-window UIA sender plus hash/nonce-only acknowledgement observer with real isolated `ARMED → SUBMITTED → ACKNOWLEDGED` acceptance evidence;
 - conservative recovery recommendation and idempotent recovery prompt;
-- **no production ChatGPT click/type/retry/takeover transport yet**.
+- **no production ChatGPT send/retry/takeover command and no automatic live-worker page close yet**.
 
 ### Quick start
 
@@ -66,7 +67,9 @@ python -m cws reconcile example --uia
 python -m cws recommend example --uia
 python -m cws ram-status
 python -m cws pool-plan
+python -m cws pool-plan --page-close-evidence .cws\page-close-evidence.json
 python -m cws action-status example
+python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
 python -m cws dispatch-plan example --uia
 python -m cws watchdog-status
 ```
@@ -114,8 +117,12 @@ V1 browser/network/reconcile details are in [`docs/V1_SPEC.md`](docs/V1_SPEC.md)
 
 The V2 low-memory planner/page-pool layer is documented in
 [`docs/V2_SPEC.md`](docs/V2_SPEC.md). `cws ram-status` reports system/aggregate Chrome
-memory, while `cws pool-plan` produces `DO_NOT_CLOSE` / `PARK_CANDIDATE` advice. It does
-not close pages.
+memory, while `cws pool-plan` produces `DO_NOT_CLOSE` / `PARK_CANDIDATE` advice. The default
+remains fail-closed: `close_allowed` is not enabled by the release version alone. Supplying
+`--page-close-evidence FILE` enables close advice for already non-live candidates only when
+that local evidence passes the generation gate. The command still never closes pages, and
+live LSM work remains `DO_NOT_CLOSE` until a production eviction dispatcher can bind a
+specific durable job/session state to a fresh exact-window lease atomically.
 
 V3's private-transport NO-GO decision and deterministic dry-run dispatcher are documented
 in [`docs/V3_DECISION.md`](docs/V3_DECISION.md) and [`docs/V3_SPEC.md`](docs/V3_SPEC.md).
@@ -125,7 +132,7 @@ read-only preflight for registry/LSM schema, RAM, watchdog lease/PID state, unre
 
 ## Safety boundary
 
-CWS never treats `continue` as idempotent. Before any recovery, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. It does not copy authentication state, bypass access controls, or reconstruct private ChatGPT endpoints. Automatic recovery is deferred until the system can prove an action is fenced, budgeted, and safe.
+CWS never treats `continue` as idempotent. Before any recovery, it requires reconciliation against durable LSM state, browser evidence, and the actual workspace. Production CWS does not migrate authentication state, bypass access controls, or reconstruct private ChatGPT endpoints. A one-time user-authorized cookie-clone experiment established that the relevant Chrome cookies were v20 App-Bound and unusable across profiles; no plaintext session-token extraction was attempted, and cookie migration was rejected as the architecture path. Automatic recovery remains disabled until the production action path is fenced, budgeted, and explicitly enabled.
 
 Browser telemetry is also data-minimized: UIA does not read the unsent prompt draft;
 `probe-uia` returns state/signature diagnostics rather than conversation text; persisted
@@ -135,6 +142,7 @@ UIA/LSM snapshot raw metadata is reduced to the numeric/state fields needed by t
 
 - **V0:** DOM + LSM telemetry + registry + watchdog + recovery recommendations.
 - **V1:** read-only UIA/CDP observability + three-signal classification + durable reconciliation fences. Implemented; recovery dispatch remains disabled.
-- **V2:** low-RAM worker planner, active/probe page-pool primitives, parked-worker bookkeeping, and RAM telemetry. Implemented conservatively; ChatGPT page-close dispatch remains disabled pending a dedicated authenticated experiment.
+- **V2:** low-RAM worker planner, active/probe page-pool primitives, parked-worker bookkeeping, and RAM telemetry. Implemented conservatively; 0.5 now has authenticated close/reopen continuity evidence, but production page-close dispatch remains disabled until a deterministic adapter/capability policy is wired.
 - **V3:** evidence says no private Web transport is currently needed; semantic two-phase fences + disabled dry-run recovery/takeover planning are implemented.
-- **0.4:** durable write-ahead action/crash fencing, strict page-close evidence evaluation, registry schema v2 migration, and independent detached watchdog hosting with cooperative stop. ChatGPT mutation transport remains absent until the dedicated `cws-disposable-v4` profile is normally authenticated and isolated experiments pass.
+- **0.4:** durable write-ahead action/crash fencing, strict page-close evidence evaluation, schema-v2 registry, and independent detached watchdog hosting.
+- **0.5:** authenticated same-profile disposable-window experiments proved server-side generation continuity, one tracked LSM-job continuity across page close/reopen, and the real `ARMED` crash window where the web turn was accepted before durable acknowledgement. Exact HWND/URL/PID/executable observation is represented by a short-lived schema-v3 worker-window lease; the gated UIA sender/ACK module is covered by local transport/runtime tests. `pool-plan` only enables non-live close advice when explicit local evidence is supplied; production auto-send and live-LSM eviction remain disabled.

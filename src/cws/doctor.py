@@ -147,14 +147,14 @@ def run_doctor(
             )
         )
 
-    # This is a static invariant in V3: execute_dispatch always raises and the CLI exposes
-    # no transport-enable flag. The check is explicit so a future action-capable release
-    # must deliberately change doctor output and tests.
+    # 0.5 contains an experiment-backed exact-window UIA transport module, but there is still
+    # no production CLI path that enables it. A real caller must also hold a fresh durable
+    # worker-window lease and pass the existing write-ahead/reconciliation fences.
     checks.append(
         DoctorCheck(
             "recovery.transport",
             DoctorStatus.PASS,
-            "disabled in 0.4; dispatch-plan is dry-run only",
+            "gated in 0.5; no production CLI enables UIA mutation transport",
         )
     )
 
@@ -250,6 +250,39 @@ def run_doctor(
                             f"status={worker.status.value} url={worker.conversation_url}",
                         )
                     )
+                    binding = registry.get_worker_window_binding(worker.worker_id)
+                    if binding is None:
+                        checks.append(
+                            DoctorCheck(
+                                "task.window_binding",
+                                DoctorStatus.PASS,
+                                "no exact-window lease is present; UIA mutation has no bound window",
+                            )
+                        )
+                    else:
+                        remaining = binding.expires_at - time.time()
+                        if remaining > 0:
+                            checks.append(
+                                DoctorCheck(
+                                    "task.window_binding",
+                                    DoctorStatus.PASS,
+                                    (
+                                        f"fresh hwnd={binding.window_handle} pid={binding.browser_pid} "
+                                        f"expires_in={remaining:.1f}s source={binding.source}"
+                                    ),
+                                )
+                            )
+                        else:
+                            checks.append(
+                                DoctorCheck(
+                                    "task.window_binding",
+                                    DoctorStatus.WARN,
+                                    (
+                                        f"stale hwnd={binding.window_handle} pid={binding.browser_pid}; "
+                                        "refresh exact-URL UIA observation before any action"
+                                    ),
+                                )
+                            )
                     if probe_uia:
                         try:
                             obs = ChromeUiaProbe().observe(

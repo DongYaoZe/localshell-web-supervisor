@@ -3,6 +3,7 @@ import unittest
 from cws.models import BrowserObservation, WorkerRecord, WorkerStatus
 from cws.uia import (
     UiaProbeUnavailable,
+    _POWERSHELL_PROBE,
     conversation_id_from_url,
     normalize_url,
     payload_from_uia_result,
@@ -33,6 +34,7 @@ class UiaNormalizationTests(unittest.TestCase):
                 {"text": "Stop answering", "enabled": True, "offscreen": False},
             ],
             "browser_pid": 123,
+            "window_handle": 456,
             "window_title": "ChatGPT - Google Chrome",
             "selected_tab_label": "ChatGPT - High memory usage - 1.2 GB",
             "tool_status_labels": ["Inspecting project files"],
@@ -43,6 +45,7 @@ class UiaNormalizationTests(unittest.TestCase):
         self.assertIn("Message delivery timed out", payload["visible_error"])
         self.assertEqual(payload["raw"]["source"], "windows_uia_chrome")
         self.assertEqual(payload["raw"]["browser_pid"], 123)
+        self.assertEqual(payload["raw"]["window_handle"], 456)
         self.assertNotIn("window_title", payload["raw"])
         self.assertNotIn("selected_tab_label", payload["raw"])
         self.assertNotIn("tool_status_labels", payload["raw"])
@@ -74,6 +77,14 @@ class UiaNormalizationTests(unittest.TestCase):
         payload = payload_from_uia_result(result)
         self.assertIsNone(payload["generating"])
         self.assertIsNone(payload["send_button_ready"])
+
+    def test_probe_enumerates_desktop_windows_and_fails_on_ambiguous_url(self):
+        self.assertIn("AutomationElement]::RootElement", _POWERSHELL_PROBE)
+        self.assertIn("Chrome_WidgetWin_1", _POWERSHELL_PROBE)
+        self.assertIn("multiple Chrome windows matched", _POWERSHELL_PROBE)
+        self.assertIn("'view_1012'", _POWERSHELL_PROBE)
+        self.assertNotIn("Address and search bar", _POWERSHELL_PROBE)
+        self.assertNotIn("MainWindowHandle", _POWERSHELL_PROBE)
 
     def test_error_result_is_not_normalized_as_browser_state(self):
         with self.assertRaises(UiaProbeUnavailable):

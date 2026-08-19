@@ -38,104 +38,140 @@ function Normalized-Url([string]$value) {
 }
 
 $expected = Normalized-Url $env:CWS_EXPECTED_URL
-$windows = @(Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
-$result = $null
+$expectedExe = [string]$env:CWS_EXPECTED_CHROME_EXE
+$expectedHwnd = [int64]0
+if ($env:CWS_EXPECTED_HWND) {
+    [void][int64]::TryParse($env:CWS_EXPECTED_HWND, [ref]$expectedHwnd)
+}
 
-foreach ($proc in $windows) {
-    $root = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
-    if (-not $root) { continue }
+$desktop = [System.Windows.Automation.AutomationElement]::RootElement
+$topWindows = $desktop.FindAll(
+    [System.Windows.Automation.TreeScope]::Children,
+    [System.Windows.Automation.Condition]::TrueCondition
+)
+$addressCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+    'view_1012'
+)
+$matches = @()
 
-    $editCond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Edit
+for ($w = 0; $w -lt $topWindows.Count; $w++) {
+    $root = $topWindows.Item($w)
+    if ([string]$root.Current.ClassName -ne 'Chrome_WidgetWin_1') { continue }
+    $chromePid = [int]$root.Current.ProcessId
+    if (-not $chromePid) { continue }
+    try { $proc = Get-Process -Id $chromePid -ErrorAction Stop } catch { continue }
+    if ($proc.ProcessName -ne 'chrome') { continue }
+    $procPath = [string]$proc.Path
+    if ($expectedExe -and (
+        -not $procPath -or -not $procPath.Equals(
+            $expectedExe,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    )) { continue }
+    $hwnd = [int64]$root.Current.NativeWindowHandle
+    if ($expectedHwnd -and $hwnd -ne $expectedHwnd) { continue }
+
+    $addressBar = $root.FindFirst(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        $addressCond
     )
-    $edits = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $editCond)
-    $address = $null
-    foreach ($e in $edits) {
-        if ($e.Current.Name -eq 'Address and search bar' -or $e.Current.AutomationId -eq 'view_1012') {
-            $address = Get-Value $e
-            if ($address) { break }
-        }
-    }
+    if (-not $addressBar) { continue }
+    $address = Get-Value $addressBar
     if (-not $address) { continue }
     $normalizedAddress = Normalized-Url $address
     if ($expected -and $normalizedAddress -ne $expected) { continue }
+    $matches += [pscustomobject]@{
+        root = $root
+        proc = $proc
+        address = [string]$address
+        hwnd = $hwnd
+    }
+}
+
+$result = $null
+if ($matches.Count -gt 1) {
+    $result = [pscustomobject]@{
+        observed_at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
+        error = 'multiple Chrome windows matched the requested URL; bind an exact HWND'
+        match_count = [int]$matches.Count
+    }
+} elseif ($matches.Count -eq 1) {
+    $match = $matches[0]
+    $root = $match.root
+    $proc = $match.proc
+    $address = $match.address
 
     $docCond = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::Document
     )
     $doc = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $docCond)
-    if (-not $doc) { continue }
-    $all = $doc.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.Condition]::TrueCondition
-    )
+    if ($doc) {
+        $all = $doc.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
 
-    $texts = @()
-    $visibleTexts = @()
-    $buttons = @()
-    for ($i = 0; $i -lt $all.Count; $i++) {
-        $e = $all.Item($i)
-        $name = [string]$e.Current.Name
-        $type = $e.Current.ControlType.ProgrammaticName
-        if ($name) {
-            $name = ($name -replace "`r|`n", ' ').Trim()
-        }
-        if ($type -eq 'ControlType.Text' -and $name) {
-            $texts += $name
-            $isVisible = -not [bool]$e.Current.IsOffscreen
-            if ($isVisible) {
-                $visibleTexts += $name
+        $texts = @()
+        $visibleTexts = @()
+        $buttons = @()
+        $composerPresent = $false
+        for ($i = 0; $i -lt $all.Count; $i++) {
+            $e = $all.Item($i)
+            $name = [string]$e.Current.Name
+            $type = $e.Current.ControlType.ProgrammaticName
+            if ([string]$e.Current.AutomationId -eq 'prompt-textarea') { $composerPresent = $true }
+            if ($name) { $name = ($name -replace "`r|`n", ' ').Trim() }
+            if ($type -eq 'ControlType.Text' -and $name) {
+                $texts += $name
+                if (-not [bool]$e.Current.IsOffscreen) { $visibleTexts += $name }
+            }
+            if ($type -eq 'ControlType.Button' -and $name) {
+                $buttons += [pscustomobject]@{
+                    text = $name
+                    automation_id = [string]$e.Current.AutomationId
+                    enabled = [bool]$e.Current.IsEnabled
+                    offscreen = [bool]$e.Current.IsOffscreen
+                }
             }
         }
-        if ($type -eq 'ControlType.Button' -and $name) {
-            $buttons += [pscustomobject]@{
-                text = $name
-                automation_id = [string]$e.Current.AutomationId
-                enabled = [bool]$e.Current.IsEnabled
-                offscreen = [bool]$e.Current.IsOffscreen
-            }
+
+        $tailParts = @()
+        $tailChars = 0
+        for ($i = $texts.Count - 1; $i -ge 0 -and $tailChars -lt 30000; $i--) {
+            $part = $texts[$i]
+            $tailParts = @($part) + $tailParts
+            $tailChars += $part.Length + 1
+        }
+        $textTail = ($tailParts -join "`n")
+        if ($textTail.Length -gt 30000) { $textTail = $textTail.Substring($textTail.Length - 30000) }
+
+        $visibleTailParts = @()
+        $visibleTailChars = 0
+        for ($i = $visibleTexts.Count - 1; $i -ge 0 -and $visibleTailChars -lt 8000; $i--) {
+            $part = $visibleTexts[$i]
+            $visibleTailParts = @($part) + $visibleTailParts
+            $visibleTailChars += $part.Length + 1
+        }
+        $visibleTextTail = ($visibleTailParts -join "`n")
+        if ($visibleTextTail.Length -gt 8000) { $visibleTextTail = $visibleTextTail.Substring($visibleTextTail.Length - 8000) }
+
+        $result = [pscustomobject]@{
+            observed_at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
+            browser_pid = [int]$proc.Id
+            window_handle = [int64]$match.hwnd
+            address = [string]$address
+            text_tail = [string]$textTail
+            visible_text_tail = [string]$visibleTextTail
+            text_elements = [int]$texts.Count
+            visible_text_elements = [int]$visibleTexts.Count
+            element_count = [int]$all.Count
+            buttons = @($buttons)
+            composer_present = [bool]$composerPresent
+            process_working_set_bytes = [int64]$proc.WorkingSet64
         }
     }
-
-    $tailParts = @()
-    $tailChars = 0
-    for ($i = $texts.Count - 1; $i -ge 0 -and $tailChars -lt 30000; $i--) {
-        $part = $texts[$i]
-        $tailParts = @($part) + $tailParts
-        $tailChars += $part.Length + 1
-    }
-    $textTail = ($tailParts -join "`n")
-    if ($textTail.Length -gt 30000) {
-        $textTail = $textTail.Substring($textTail.Length - 30000)
-    }
-
-    $visibleTailParts = @()
-    $visibleTailChars = 0
-    for ($i = $visibleTexts.Count - 1; $i -ge 0 -and $visibleTailChars -lt 8000; $i--) {
-        $part = $visibleTexts[$i]
-        $visibleTailParts = @($part) + $visibleTailParts
-        $visibleTailChars += $part.Length + 1
-    }
-    $visibleTextTail = ($visibleTailParts -join "`n")
-    if ($visibleTextTail.Length -gt 8000) {
-        $visibleTextTail = $visibleTextTail.Substring($visibleTextTail.Length - 8000)
-    }
-
-    $result = [pscustomobject]@{
-        observed_at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
-        browser_pid = [int]$proc.Id
-        address = [string]$address
-        text_tail = [string]$textTail
-        visible_text_tail = [string]$visibleTextTail
-        text_elements = [int]$texts.Count
-        visible_text_elements = [int]$visibleTexts.Count
-        element_count = [int]$all.Count
-        buttons = @($buttons)
-        process_working_set_bytes = [int64]$proc.WorkingSet64
-    }
-    break
 }
 
 if (-not $result) {
@@ -181,7 +217,10 @@ def payload_from_uia_result(result: dict[str, Any]) -> dict[str, Any]:
         if any(label == marker or label.startswith(marker + " ") for marker in _SEND_MARKERS):
             send_ready = bool(row.get("enabled", True)) and not bool(row.get("offscreen", False))
             break
-    generating: bool | None = True if stop_visible else (False if send_ready is True else None)
+    composer_present = bool(result.get("composer_present"))
+    generating: bool | None = (
+        True if stop_visible else (False if (send_ready is True or composer_present) else None)
+    )
     text_tail = str(result.get("text_tail") or "")
     visible_text_tail = str(result.get("visible_text_tail") or "")
     lower_tail = visible_text_tail.lower()
@@ -213,12 +252,34 @@ def payload_from_uia_result(result: dict[str, Any]) -> dict[str, Any]:
         "raw": {
             "source": "windows_uia_chrome",
             "browser_pid": result.get("browser_pid"),
+            "window_handle": result.get("window_handle"),
+            "composer_present": result.get("composer_present"),
             "text_elements": result.get("text_elements"),
             "visible_text_elements": result.get("visible_text_elements"),
             "element_count": result.get("element_count"),
             "process_working_set_bytes": result.get("process_working_set_bytes"),
         },
     }
+
+
+def _default_chrome_executable() -> str | None:
+    candidates = [
+        os.path.join(
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            "Google",
+            "Chrome",
+            "Application",
+            "chrome.exe",
+        ),
+        os.path.join(
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+            "Google",
+            "Chrome",
+            "Application",
+            "chrome.exe",
+        ),
+    ]
+    return next((path for path in candidates if os.path.isfile(path)), None)
 
 
 class ChromeUiaProbe:
@@ -230,19 +291,35 @@ class ChromeUiaProbe:
     attachment is unavailable.
     """
 
-    def __init__(self, *, powershell: str = "powershell.exe", timeout_s: float = 8.0) -> None:
+    def __init__(
+        self,
+        *,
+        powershell: str = "powershell.exe",
+        timeout_s: float = 8.0,
+        chrome_executable: str | None = None,
+    ) -> None:
         self.powershell = powershell
         self.timeout_s = max(1.0, float(timeout_s))
+        self.chrome_executable = chrome_executable or _default_chrome_executable()
 
     @property
     def available(self) -> bool:
         return os.name == "nt"
 
-    def raw_probe(self, conversation_url: str) -> dict[str, Any]:
+    def raw_probe(
+        self,
+        conversation_url: str,
+        *,
+        expected_hwnd: int | None = None,
+    ) -> dict[str, Any]:
         if not self.available:
             raise UiaProbeUnavailable("Windows UI Automation is only available on Windows")
         env = os.environ.copy()
         env["CWS_EXPECTED_URL"] = conversation_url
+        if self.chrome_executable:
+            env["CWS_EXPECTED_CHROME_EXE"] = self.chrome_executable
+        if expected_hwnd is not None:
+            env["CWS_EXPECTED_HWND"] = str(int(expected_hwnd))
         completed = subprocess.run(
             [
                 self.powershell,
@@ -282,8 +359,9 @@ class ChromeUiaProbe:
         worker: WorkerRecord,
         *,
         previous: BrowserObservation | None = None,
+        expected_hwnd: int | None = None,
     ) -> BrowserObservation:
-        result = self.raw_probe(worker.conversation_url)
+        result = self.raw_probe(worker.conversation_url, expected_hwnd=expected_hwnd)
         payload = payload_from_uia_result(result)
         observed_url = normalize_url(str(payload.get("url") or ""))
         expected_url = normalize_url(worker.conversation_url)
@@ -293,10 +371,15 @@ class ChromeUiaProbe:
             )
         return observation_from_dom_payload(worker.worker_id, payload, previous=previous)
 
-    def inspect(self, worker: WorkerRecord) -> dict[str, Any]:
+    def inspect(
+        self,
+        worker: WorkerRecord,
+        *,
+        expected_hwnd: int | None = None,
+    ) -> dict[str, Any]:
         """Return state/signature diagnostics without returning conversation or draft text."""
         previous = None
-        result = self.raw_probe(worker.conversation_url)
+        result = self.raw_probe(worker.conversation_url, expected_hwnd=expected_hwnd)
         payload = payload_from_uia_result(result)
         obs = observation_from_dom_payload(worker.worker_id, payload, previous=previous)
         return {

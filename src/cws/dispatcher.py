@@ -67,9 +67,10 @@ def build_dispatch_plan(
 ) -> DispatchPlan:
     """Evaluate a recovery action without executing it.
 
-    CWS 0.4 ships no ChatGPT mutation transport. `transport_enabled` therefore remains
-    false in the CLI. This planner exists so future transports cannot bypass
-    reconciliation/fence checks by accident.
+    CWS 0.5 still exposes no production recovery-dispatch path. `transport_enabled` remains
+    false in the CLI even though an explicitly enabled exact-window UIA library adapter exists
+    for isolated/guarded use. This planner prevents transports from bypassing reconciliation
+    and fence checks by accident.
     """
     policy = policy or DispatchPolicy()
     now = time.time() if now is None else float(now)
@@ -246,8 +247,8 @@ def build_dispatch_plan(
     would_dispatch = candidate_ready and policy.transport_enabled
     if candidate_ready and not policy.transport_enabled:
         reason = (
-            "all deterministic preconditions are satisfied, but V3 action transport is disabled; "
-            "dry-run only"
+            "all deterministic preconditions are satisfied, but production recovery dispatch "
+            "is disabled in 0.5; dry-run only"
         )
     elif candidate_ready:
         reason = "all deterministic preconditions are satisfied"
@@ -285,7 +286,7 @@ def _action_from_recommendation(recommendation: RecoveryRecommendation) -> Dispa
 
 
 def execute_dispatch(_plan: DispatchPlan) -> None:
-    """CWS 0.4 deliberately ships no ChatGPT mutation transport."""
+    """Production recovery dispatch remains deliberately disabled in CWS 0.5."""
     raise DispatchDisabled(
-        "ChatGPT mutation transport is disabled in 0.4; use dispatch-plan for audited dry-run output"
+        "production recovery dispatch is disabled in 0.5; use dispatch-plan for audited dry-run output"
     )
