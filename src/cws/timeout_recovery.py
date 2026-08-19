@@ -6,7 +6,7 @@ import time
 from .actions import ActionAttemptState
 from .dispatcher import DispatchPlan
 from .models import BrowserObservation
-from .registry import Registry
+from .registry import OBSERVATION_RETENTION_PER_ENTITY, Registry
 
 
 RECOVERABLE_DELIVERY_ERRORS = frozenset(
@@ -65,13 +65,21 @@ def error_shadowed_by_active_generation(
     worker_id = task.current_worker_id
     if not worker_id or browser.worker_id != worker_id:
         return True
-    for observed in registry.browser_observation_history(worker_id, limit=30):
+    history = registry.browser_observation_history(
+        worker_id,
+        limit=OBSERVATION_RETENTION_PER_ENTITY,
+    )
+    for observed in history:
         observed_marker = normalized_visible_error(observed)
         if observed_marker != marker:
-            break
+            return False
         if observed.generating is True:
             return True
-    return False
+
+    # If the entire retained window is still the same error episode, its true start is
+    # no longer observable. Fail closed instead of treating an aged-out active-generation
+    # sample as proof that this is a fresh timeout.
+    return len(history) >= OBSERVATION_RETENTION_PER_ENTITY
 
 
 def acknowledged_state_is_unchanged(

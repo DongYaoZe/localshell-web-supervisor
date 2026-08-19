@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cws.actions import ActionAcknowledgement, build_action_attempt, evidence_digest
 from cws.dispatcher import DispatchAction, DispatchPlan
@@ -249,6 +250,59 @@ class TimeoutRecoveryTests(unittest.TestCase):
             allowed.checks["timeout_error_not_shadowed_by_newer_generation"]
         )
         self.assertTrue(allowed.candidate_ready)
+
+    def test_stale_banner_shadow_does_not_expire_after_thirty_observations(self):
+        active = self.browser(
+            signature="normal-turn-generating",
+            generating=True,
+            observed_at=NOW - 100,
+        )
+        self.registry.record_browser_observation(active)
+        latest = None
+        for index in range(35):
+            latest = self.browser(
+                signature=f"stale-banner-idle-{index}",
+                generating=False,
+                observed_at=NOW - 99 + index,
+            )
+            self.registry.record_browser_observation(latest)
+
+        blocked = gate_timeout_dispatch_plan(
+            self.registry,
+            self.plan(),
+            browser=latest,
+            policy=TimeoutRecoveryPolicy(enabled=True, cooldown_s=0),
+            now=NOW,
+        )
+        self.assertFalse(blocked.candidate_ready)
+        self.assertFalse(blocked.would_dispatch)
+        self.assertFalse(
+            blocked.checks["timeout_error_not_shadowed_by_newer_generation"]
+        )
+
+    def test_unbounded_same_error_episode_fails_closed_when_history_is_saturated(self):
+        latest = None
+        for index in range(5):
+            latest = self.browser(
+                signature=f"same-error-{index}",
+                generating=False,
+                observed_at=NOW - 5 + index,
+            )
+            self.registry.record_browser_observation(latest)
+
+        with patch("cws.timeout_recovery.OBSERVATION_RETENTION_PER_ENTITY", 5):
+            blocked = gate_timeout_dispatch_plan(
+                self.registry,
+                self.plan(),
+                browser=latest,
+                policy=TimeoutRecoveryPolicy(enabled=True, cooldown_s=0),
+                now=NOW,
+            )
+        self.assertFalse(blocked.candidate_ready)
+        self.assertFalse(blocked.would_dispatch)
+        self.assertFalse(
+            blocked.checks["timeout_error_not_shadowed_by_newer_generation"]
+        )
 
 
 if __name__ == "__main__":

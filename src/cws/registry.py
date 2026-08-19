@@ -1681,7 +1681,7 @@ class Registry:
         rows = self._conn.execute(
             """SELECT payload_json FROM browser_observations
                WHERE worker_id = ? ORDER BY observed_at DESC, id DESC LIMIT ?""",
-            (worker_id, max(1, min(int(limit), 200))),
+            (worker_id, max(1, min(int(limit), OBSERVATION_RETENTION_PER_ENTITY))),
         ).fetchall()
         return [BrowserObservation(**json.loads(row["payload_json"])) for row in rows]
 

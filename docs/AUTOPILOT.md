@@ -44,6 +44,8 @@ If any gate is missing, stale, contradictory, future-dated, or ambiguous, the wa
 
 A successful nonce acknowledgement is not itself assumed to clear an old visible ChatGPT error banner. After positive ACK, CWS stores the normal browser observation signature for that acknowledged UI state. If the same signature is observed again, the old banner is treated as already handled and cannot trigger another recovery action.
 
+Separately, if one contiguous visible-error episode ever coexists with `generating=True`, CWS treats that banner as stale/ambiguous for the rest of that episode. That suppression does not expire after a fixed number of samples: it scans the full retained browser-observation window until the banner clears or changes. If the episode start itself has aged out of retention, recovery fails closed instead of assuming the error is fresh.
+
 A changed UI signature may become a new candidate only after the cooldown and all ordinary reconciliation fences pass again.
 
 ## What remains disabled
