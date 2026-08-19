@@ -67,10 +67,10 @@ def build_dispatch_plan(
 ) -> DispatchPlan:
     """Evaluate a recovery action without executing it.
 
-    CWS 0.5 still exposes no production recovery-dispatch path. `transport_enabled` remains
-    false in the CLI even though an explicitly enabled exact-window UIA library adapter exists
-    for isolated/guarded use. This planner prevents transports from bypassing reconciliation
-    and fence checks by accident.
+    CWS 0.6 keeps this planner transport-neutral. Normal `dispatch-plan` calls set
+    `transport_enabled=false`; the separate explicit executor may set it true only after its
+    own opt-in/task-confirmation checks. This planner prevents any transport from bypassing
+    reconciliation and fence checks by accident.
     """
     policy = policy or DispatchPolicy()
     now = time.time() if now is None else float(now)
@@ -247,8 +247,8 @@ def build_dispatch_plan(
     would_dispatch = candidate_ready and policy.transport_enabled
     if candidate_ready and not policy.transport_enabled:
         reason = (
-            "all deterministic preconditions are satisfied, but production recovery dispatch "
-            "is disabled in 0.5; dry-run only"
+            "all deterministic preconditions are satisfied, but transport is disabled for "
+            "this plan; dry-run only"
         )
     elif candidate_ready:
         reason = "all deterministic preconditions are satisfied"
@@ -286,7 +286,7 @@ def _action_from_recommendation(recommendation: RecoveryRecommendation) -> Dispa
 
 
 def execute_dispatch(_plan: DispatchPlan) -> None:
-    """Production recovery dispatch remains deliberately disabled in CWS 0.5."""
+    """Legacy generic executor remains disabled; 0.6 uses the fenced dispatch_runtime path."""
     raise DispatchDisabled(
-        "production recovery dispatch is disabled in 0.5; use dispatch-plan for audited dry-run output"
+        "generic recovery dispatch is disabled; use dispatch-plan or the explicit fenced 0.6 executor"
     )

@@ -88,7 +88,7 @@ tool_execution_parking_safe=true
 
 when run against that D-round evidence, including `--require-tool`.
 
-CWS 0.5 still keeps live LSM work `DO_NOT_CLOSE` in the normal `pool-plan` policy. The reason is architectural rather than lack of browser evidence: a production live-worker eviction path must atomically bind the exact durable LSM job/session state to a fresh worker-window lease and the close action. That dispatcher does not exist yet.
+CWS 0.6 still keeps live LSM work `DO_NOT_CLOSE` in the normal `pool-plan` policy. The evidence is now representable as versioned, expiring capability provenance, but an automatic live-worker eviction path still does not exist.
 
 ## Action acknowledgement and crash-fence evidence
 
@@ -133,13 +133,15 @@ The stronger tool gate additionally requires:
 - that tool completed after close;
 - its final response was observable after reopen.
 
-## Production conclusion
+## Current conclusion
 
-0.5 changes the evidence status, not the overall safety rule:
+The 0.5 experiments remain the evidence source; 0.6 consumes that evidence conservatively:
 
 - ordinary authenticated page close/reopen continuity: **proven in isolation**;
 - one bounded tracked LSM-job close/reopen continuity: **proven in isolation**;
 - exact-window UIA action/ack primitives: **proven in isolation**;
-- automatic recovery dispatch: **not enabled**;
+- versioned, context-bound page-continuity capability records: **implemented in 0.6**;
+- explicit one-shot fenced current-worker recovery execution: **implemented in 0.6**;
+- resident-watchdog automatic recovery dispatch: **not enabled**;
 - automatic live-LSM page eviction: **not enabled**;
-- private ChatGPT API reconstruction: **still unnecessary and out of scope**.
+- private ChatGPT endpoint reconstruction: **still unnecessary and out of scope**.

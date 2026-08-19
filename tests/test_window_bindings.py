@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cws.cli import _refresh_uia
+from cws.db import SCHEMA_VERSION
 from cws.models import BrowserObservation, WorkerStatus
 from cws.registry import Registry
 
@@ -192,7 +193,7 @@ class WindowBindingTests(unittest.TestCase):
                 self.assertEqual(reg.get_task("legacy").current_worker_id, "wlegacy")
                 self.assertEqual(reg.get_worker("wlegacy").status, WorkerStatus.ACTIVE)
                 version = reg._conn.execute("PRAGMA user_version").fetchone()[0]
-                self.assertEqual(version, 3)
+                self.assertEqual(version, SCHEMA_VERSION)
                 table = reg._conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='worker_window_bindings'"
                 ).fetchone()

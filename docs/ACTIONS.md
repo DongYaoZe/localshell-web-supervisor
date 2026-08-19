@@ -1,6 +1,6 @@
 # Action adapter and crash fencing
 
-CWS 0.5 contains an **experiment-backed exact-window Windows UI Automation transport module**, but it is still gated and is not wired to a production CLI or the resident watchdog.
+CWS 0.6 keeps the exact-window Windows UI Automation transport gated by default. It is now wired only to an explicit one-shot `dispatch-execute` command; the resident watchdog still does not auto-dispatch.
 
 The design goal remains unchanged: a supervisor crash must never turn an uncertain previous send into an automatic duplicate send.
 
@@ -12,8 +12,8 @@ The durable record contains control metadata only:
 
 - task and worker ids;
 - reconciliation fence token/version;
-- prompt SHA-256, not prompt text;
-- random local nonce;
+- wire-prompt SHA-256, not recovery prompt text;
+- random local nonce and prompt-protocol version;
 - pre-action message signature when available;
 - timestamps and transport/ack metadata.
 
@@ -41,9 +41,9 @@ This is a database invariant, not only a Python check.
 
 ## Exact-window UIA transport
 
-`ChromeUiaActionTransport` is the first concrete ChatGPT mutation adapter in the repository. It remains disabled by default and there is intentionally no `cws send`, `cws continue`, or watchdog auto-dispatch path in 0.5.
+`ChromeUiaActionTransport` remains disabled by default. There is still no generic `cws send` or `cws continue` command and no watchdog auto-dispatch. The only operational entry is `dispatch-execute`, which enables the adapter for one invocation after explicit task confirmation and all deterministic recovery fences pass.
 
-The preferred construction path is a fresh `WorkerWindowBinding` recorded by exact-URL UIA observation. Registry schema v3 stores a short-lived lease containing:
+The preferred construction path is a fresh `WorkerWindowBinding` recorded by exact-URL UIA observation. Registry schema v4 retains the short-lived lease containing:
 
 - worker id;
 - native HWND;
@@ -65,7 +65,7 @@ The PowerShell helper requires:
 7. `prompt-textarea`;
 8. no pre-existing ready draft.
 
-Prompt text is passed to the child process through a local environment variable encoded for transport; it is not placed in the command line or persisted in the action record.
+The canonical recovery prompt is rendered with one non-secret `CWS-ACTION-<nonce>` idempotency marker before hashing/submission. The original recovery text is not persisted. The wire text is passed to the child process outside the command line and is reconstructed only from the canonical prompt plus the durable nonce.
 
 After `ValuePattern.SetValue(prompt)`, ChatGPT may update its application-level composer state asynchronously. A real isolated smoke showed the Send control can appear later than 300 ms. The adapter therefore polls for at most 2 seconds, every 50 ms, revalidating the exact URL and requiring a positive enabled/on-screen `composer-submit-button`. If readiness never appears, the outcome is side-effect-ambiguous and requires reconciliation.
 
@@ -94,13 +94,13 @@ These are the intended semantics, not exceptional escape hatches.
 - text-element count;
 - SHA-256 text signature.
 
-It does not return conversation text, request bodies, cookies, tokens, or headers.
+It does not return conversation text or transport payload content.
 
 `acknowledgement_from_uia_observation()` requires the same worker and a positive evidence hash. Callers can require generation completion and set minimum/maximum nonce-occurrence bounds.
 
 Accessibility trees may expose the same visible turn multiple times, so nonce occurrences are a **bounded duplicate fence**, not an exact count of user turns. Stable signatures across independent observations are stronger than one instantaneous sample.
 
-There is no CLI that lets an operator fabricate `ack=true`.
+`action-reconcile-uia ATTEMPT` invokes this observer and marks the attempt acknowledged only when the known marker is observed exactly once and generation is complete. There is still no CLI that fabricates `ack=true`.
 
 ## Planner feedback
 
@@ -112,30 +112,31 @@ An unresolved action feeds back into `dispatch-plan`. Even if two reconciliation
 
 ```powershell
 python -m cws action-status TASK
+python -m cws action-reconcile-uia ATTEMPT
 python -m cws action-cancel ATTEMPT --reason "human reconciliation completed"
 ```
 
-These commands do not send or acknowledge ChatGPT messages. `action-cancel` affects only the local duplicate-send lock.
+`action-status` is read-only. `action-reconcile-uia` can only acknowledge from positive exact-window evidence. `action-cancel` affects only the local duplicate-send lock.
 
 ## Schema milestones
 
 - schema v2: `action_attempts` plus the one-unresolved-action unique index;
-- schema v3: short-lived `worker_window_bindings` for exact-window mutation fencing.
+- schema v3: short-lived `worker_window_bindings` for exact-window mutation fencing;
+- schema v4: durable page-capability provenance and the reusable probe-slot record; recovery execution also uses atomic ARMED+budget persistence.
 
 Migrations are additive. Unknown future registry schema versions fail closed.
 
-## Still not production dispatch
+## Explicit execution, still no unattended dispatch
 
-0.5 proves that the adapter can work safely on a disposable, exact-bound normal-Chrome conversation. It does **not** automatically authorize recovery turns in ordinary supervised tasks.
+0.6 wires the policy layer for a one-shot current-worker continuation. `dispatch-execute` requires:
 
-Production auto-dispatch still requires an explicit policy layer that combines:
-
-- fresh semantic reconciliation fences;
+- fresh, stable two-sample semantic reconciliation fences;
+- exact `--confirm-task` match and explicit UIA enable flag;
 - no unresolved prior action;
 - fresh exact-window binding;
-- durable LSM/workspace revalidation;
-- recovery budget;
-- the gated transport;
-- positive post-action acknowledgement.
+- durable LSM/workspace revalidation with no active LSM work;
+- remaining recovery budget;
+- canonical recovery prompt;
+- the gated transport.
 
-Until that policy is deliberately wired and tested, resident watchdog operation remains observe/recommend only.
+The ARMED row and recovery-budget increment are committed atomically before submission. Positive post-action acknowledgement remains a separate observation step. The resident watchdog does not invoke the executor automatically in 0.6.

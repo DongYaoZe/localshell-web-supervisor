@@ -39,7 +39,7 @@ CWS must not:
 - reimplement ChatGPT private backend endpoints as the default execution transport;
 - parse private response bodies when timing/status metadata is sufficient for health detection.
 
-A fresh isolated browser that is unauthenticated or blocked by an access-control page is treated as a boundary, not as a challenge to circumvent. During 0.5 development the user explicitly authorized one local cookie-clone diagnostic after ordinary login paths failed; it established that the relevant Chrome cookies used v20 App-Bound encryption and were unusable across profiles. No plaintext session token was extracted, and credential migration remains outside the production CWS capability boundary.
+A fresh isolated browser that cannot complete ordinary sign-in is treated as a boundary, not as a challenge to circumvent. Browser sign-in-state migration remains outside the production CWS capability boundary; the supported path is the user's already-authorized normal Chrome window with exact UIA identity fences.
 
 ## Recovery safety boundary
 
@@ -65,17 +65,20 @@ Hard fences:
 Any external worker mutation must be recorded durably as `ARMED` **before** the transport is
 called. `ARMED`, `SUBMITTED`, and `RECONCILE_REQUIRED` all block another attempt for the same
 task. Registry schema v2 introduced that partial unique index, so it also holds across racing
-supervisor processes. Schema v3 separately adds short-lived exact-window leases; an expired
-lease blocks the gated UIA transport before draft input and must be refreshed by observation.
+supervisor processes. Schema v3 added short-lived exact-window leases; schema v4 adds durable
+capability provenance and the reusable probe-slot record. For recovery execution, ARMED state
+and recovery-budget consumption are committed atomically before submission. An expired
+window lease blocks the gated UIA transport before draft input and must be refreshed by observation.
 
 A transport exception is treated as an ambiguous side-effect window and becomes
 `RECONCILE_REQUIRED`; it is not permission to retry. Only proof that no external side
 effect occurred may produce terminal `FAILED`. A positive acknowledgement must be tied to
 the same attempt and worker before the duplicate-send lock is released as `ACKNOWLEDGED`.
 
-CWS 0.5 contains an experiment-backed exact-window UIA sender/ACK observer, but exposes no
-production message-sending command and no manual CLI that can fabricate an
-acknowledgement in this milestone.
+CWS 0.6 exposes only an explicit one-shot current-worker executor. It requires exact task
+confirmation plus all semantic/LSM/workspace/window/action fences. The resident watchdog
+does not call it automatically. `action-reconcile-uia` can acknowledge only from positive
+single-turn completion evidence; no CLI fabricates acknowledgement.
 
 ## Process and machine safety
 
@@ -86,8 +89,10 @@ acknowledgement in this milestone.
 - Resident watchdog shutdown should use the cooperative lease-stop fence; do not depend on LSM process-tree kill semantics.
 - Strong authenticated evidence now proves close/reopen continuity for pure model generation and one harmless Local Shell MCP job in an exact-bound disposable window. This does not prove arbitrary side-effecting tools are idempotent.
 - Production pool policy still pins live LSM work, active generation, and ambiguous recovery states as `DO_NOT_CLOSE`; capability evidence does not authorize automatic eviction.
-- Anonymous/localhost browser experiments and copied authentication state cannot satisfy the page-close safety gate.
-- Reuse one exact-bound experimental window where possible; never bulk-close ambiguous unmarked user windows.
+- Page-continuity capabilities are versioned, context-bound, expiring, and only used when explicitly selected.
+- The durable probe model permits at most one reusable slot; stale or ambiguous ownership blocks replacement rather than opening another window.
+- Anonymous/localhost experiments cannot satisfy the page-close safety gate.
+- Never bulk-close ambiguous unmarked user windows.
 
 `cws doctor` is intentionally diagnostic-only. It may read registry/LSM schema, local
 workspace/Git state, RAM/process working-set counters, watchdog lease state, and optionally

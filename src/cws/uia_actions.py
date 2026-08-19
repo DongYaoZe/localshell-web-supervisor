@@ -17,7 +17,6 @@ from .actions import (
     evidence_digest,
 )
 from .models import WorkerWindowBinding
-from .models import WorkerWindowBinding
 from .uia import conversation_id_from_url, normalize_url
 
 
@@ -400,8 +399,8 @@ def _run_powershell_json(
 class ChromeUiaActionTransport:
     """Gated exact-window ChatGPT sender for an already-ARMED action.
 
-    There is intentionally no production CLI path that enables this transport in 0.5.
-    A caller must explicitly bind worker id, conversation URL, HWND and Chrome executable.
+    The transport remains disabled by default. CWS 0.6 exposes only an explicit one-shot
+    executor that enables it after semantic, action, task-confirmation, and fresh-window fences.
     """
 
     name = "windows_uia_exact_window"
@@ -471,7 +470,7 @@ class ChromeUiaActionTransport:
     def submit(self, intent: ActionIntent) -> TransportSubmission:
         if not self.enabled:
             raise ActionTransportDisabled(
-                "exact-window UIA mutation transport is gated; no production CLI enables it"
+                "exact-window UIA mutation transport is gated; explicit per-invocation enablement is required"
             )
         if self.binding_expires_at is not None and time.time() >= self.binding_expires_at:
             return TransportSubmission(

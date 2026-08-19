@@ -69,6 +69,52 @@ class WorkerWindowBinding:
         return self.expires_at > float(now)
 
 
+class PageCapabilityKind(StrEnum):
+    GENERATION = "page_close_generation"
+    TOOL_EXECUTION = "page_close_tool"
+
+
+@dataclass(slots=True)
+class PageCapabilityRecord:
+    capability_id: str
+    kind: PageCapabilityKind
+    scope_host: str
+    browser_family: str
+    browser_major: int
+    platform: str
+    surface: str
+    isolation_mode: str
+    evaluator_version: str
+    evidence_digest: str
+    source_experiment_id: str
+    observed_at: float
+    recorded_at: float
+    expires_at: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def is_fresh(self, *, now: float) -> bool:
+        return self.observed_at <= float(now) < self.expires_at
+
+
+@dataclass(slots=True)
+class ProbeWindowSlotBinding:
+    slot_id: str
+    owner_token: str
+    target_worker_id: str
+    target_conversation_url: str
+    actual_url: str
+    window_handle: int
+    browser_pid: int
+    chrome_executable: str
+    source: str
+    bound_at: float
+    observed_at: float
+    expires_at: float
+
+    def is_fresh(self, *, now: float) -> bool:
+        return self.expires_at > float(now)
+
+
 @dataclass(slots=True)
 class BrowserObservation:
     worker_id: str

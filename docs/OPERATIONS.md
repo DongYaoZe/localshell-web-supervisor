@@ -1,6 +1,6 @@
 # Operations runbook
 
-This runbook describes how to operate the CWS 0.5 control plane while keeping the experiment-backed UIA mutation module production-gated and preserving the authentication boundary.
+This runbook describes the CWS 0.6 control plane. Observation and planning remain the default; recovery mutation is an explicit one-shot operation and the resident watchdog still does not auto-dispatch or auto-close live pages.
 
 ## 1. Preflight
 
@@ -27,7 +27,8 @@ python -m cws --db .cws\registry.sqlite3 doctor --task TASK --uia
 - resident watchdog lease/PID/stop-fence status;
 - unresolved write-ahead action-fence status for a named task;
 - exact-window lease presence/freshness for a named worker;
-- the fact that the 0.5 UIA mutation module is gated and has no production CLI enable path;
+- the fact that recovery transport is gated by default and requires explicit one-shot opt-in plus exact task confirmation;
+- durable page-capability record counts/freshness and the at-most-one reusable probe-slot invariant;
 - optional task workspace/Git, LSM logical session/plan/in-flight state, worker status, and exact-URL UIA liveness.
 
 A `WARN` does not necessarily mean the supervisor is broken. For example, no resident watchdog lease is expected before `cws watch` is started. `FAIL` means a requested hard invariant such as a named task/workspace or durable-state schema could not be verified.
@@ -107,10 +108,14 @@ The detached CWS host and cooperative lease stop avoid depending on that process
 ```powershell
 python -m cws ram-status
 python -m cws pool-plan
-python -m cws pool-plan --page-close-evidence .cws\page-close-evidence.json
+python -m cws capability-import --file .cws\page-close-evidence.json --json
+python -m cws capability-status --json
+python -m cws pool-plan --page-close-capability latest
 ```
 
-`pool-plan` is advice only. It can mark workers `DO_NOT_CLOSE`, `PARK_CANDIDATE`, or `NO_PAGE`; it never closes a page. The default is fail-closed. Only an explicitly supplied local `PageCloseEvidence` file that passes the generation gate enables `close_allowed=true` advice for already non-live parking candidates.
+`pool-plan` is advice only. It can mark workers `DO_NOT_CLOSE`, `PARK_CANDIDATE`, or `NO_PAGE`; it never closes a page. The default is fail-closed. The preferred 0.6 path is to validate evidence once with `capability-import`, then explicitly select a context-matching, unexpired generation capability with `--page-close-capability`. Historical experiment provenance must be embedded in the evidence or supplied explicitly at import time; CWS never substitutes the current browser/runtime as the old experiment's provenance. The legacy one-shot `--page-close-evidence` input remains compatible.
+
+The reusable probe model has at most one durable slot. Same-target observation may reuse it; a different parked target requires exact-close-before-open; stale or ambiguous ownership blocks instead of causing an extra window. The probe-window mutation transport remains disabled by default and is not called by the watchdog in 0.6.
 
 A live LSM tool/job/continuation, browser generation, or ambiguous task state still wins over RAM pressure and remains `DO_NOT_CLOSE`. Although one bounded tracked LSM-job close/reopen experiment also passed the stronger tool gate, production live-LSM eviction remains disabled until an eviction dispatcher can atomically bind a specific durable job/session state to a fresh exact-window lease and close operation. If all workers are pinned, CWS reports the pressure rather than choosing a live task to sacrifice.
 
@@ -120,13 +125,16 @@ A live LSM tool/job/continuation, browser generation, or ambiguous task state st
 python -m cws recommend TASK --uia
 python -m cws dispatch-plan TASK --uia
 python -m cws action-status TASK
+# Only after a candidate-ready dry run and an explicit operator decision:
+python -m cws dispatch-execute TASK --confirm-task TASK --enable-experimental-uia
+python -m cws action-reconcile-uia ATTEMPT
 python -m cws recovery-history TASK
 python -m cws reconciliation-history TASK
 ```
 
 `dispatch-plan` remains dry-run. It requires two fresh, distinct, sufficiently separated semantic reconciliation fences plus LSM/browser/workspace safety checks. An unresolved write-ahead action (`ARMED`, `SUBMITTED`, or `RECONCILE_REQUIRED`) feeds back into the planner and forces `candidate_ready=false`.
 
-The write-ahead action protocol writes `ARMED` durably before any external side effect. Schema v2 introduced the one-unresolved-action SQLite invariant; schema v3 additionally stores short-lived exact-window leases. Ambiguous transport outcomes require reconciliation instead of automatic retry. See `ACTIONS.md`.
+The write-ahead action protocol writes `ARMED` durably before any external side effect. In 0.6, recovery arming and recovery-budget consumption happen in the same SQLite transaction. Schema v4 retains the unresolved-action invariant and short-lived exact-window leases, and adds durable capability provenance plus the reusable probe-slot record. Ambiguous transport outcomes require reconciliation instead of automatic retry. See `ACTIONS.md` and `V4_SPEC.md`.
 
 `action-cancel` exists only for an explicit local/operator decision after reconciliation:
 
@@ -136,11 +144,13 @@ python -m cws action-cancel ATTEMPT --reason "human reconciliation completed"
 
 It releases the local duplicate-send lock and does **not** claim to undo any external effect.
 
-Even when `dispatch-plan` says `candidate_ready=true`, `would_dispatch=false`. 0.5 contains a gated exact-window UIA sender/ACK observer for isolated use, but there is no production CLI command that enables it, sends a recovery turn, or fabricates acknowledgement. A fresh worker-window lease is an additional prerequisite, not a substitute for reconciliation fences.
+Normal `dispatch-plan` keeps `would_dispatch=false`. `dispatch-execute` is a separate explicit one-shot path: it requires the two-sample semantic fence, latest-fence identity, active current worker, canonical recovery prompt, no active LSM work, fresh exact-window lease, no unresolved prior action, remaining recovery budget, `--enable-experimental-uia`, and an exact `--confirm-task` match. The resident watchdog never supplies those opt-ins automatically.
+
+The submitted recovery turn carries a non-secret durable attempt marker. `action-reconcile-uia` acknowledges only when that marker occurs exactly once on the exact current conversation and generation has completed; otherwise the action stays unresolved and another dispatch remains blocked.
 
 ## 7. Isolated page-close evidence
 
-0.5 completed authenticated same-profile disposable-window experiments for pure generation and one harmless live Local Shell MCP job. Evidence remains local under `.cws/` and can be re-evaluated with:
+The 0.5 experiment milestone established close/reopen continuity for pure generation and one harmless live Local Shell MCP job. In 0.6 that result can be imported as versioned, expiring deployment-scoped capability provenance rather than treated as a release-wide boolean. Evidence remains local under `.cws/` and can be re-evaluated with:
 
 ```powershell
 python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
@@ -165,7 +175,7 @@ Before changing CWS or Local Shell MCP:
 
 The direct LSM file adapter is schema-gated. If LSM changes session/job durable formats, CWS should fail closed until the adapter is explicitly updated and tested.
 
-CWS registry schema v3 is additive over v2 and introduces only short-lived worker-window bindings; stale bindings are never treated as authority. Reconciliation fence semantics are separately versioned. Older fence records never silently match a newer fence schema; an upgrade forces fresh reconciliation.
+CWS registry schema v4 is additive over v3. It adds page-capability provenance and the reusable probe-slot record while preserving tasks, workers, observations, reconciliation records, action attempts, watchdog leases, and worker-window leases. Stale bindings/capabilities are never treated as authority. Reconciliation fence semantics remain separately versioned.
 
 ## 9. Data handling
 
@@ -173,13 +183,14 @@ The local `.cws/` directory is ignored by Git and may contain the registry, obse
 
 CWS intentionally minimizes persisted browser data:
 
-- no production cookie/token/password/session-secret collection or migration; the one-time user-authorized v20 cookie-clone diagnostic is not a product feature and its local snapshots must be removed after the experiment;
+- no browser sign-in-state collection or migration as a product feature;
 - no unsent prompt draft collection;
 - no request/response bodies or authorization headers;
 - no conversation text in `BrowserObservation` or reconciliation records;
 - no changed-path list in recovery fences;
 - UIA/LSM diagnostics retain signatures, state flags, counts, and bounded metadata needed for supervision;
 - worker-window leases retain only worker id, URL, HWND, PID, executable path, source, and timestamps;
-- action attempts persist prompt hashes/nonces and control metadata, not prompt text.
+- action attempts persist wire-prompt hashes/nonces and control metadata, not recovery prompt text;
+- page-capability rows persist evidence digests, context/version/expiry data, and boolean evaluation metadata, not raw experiment text/signatures.
 
 Run `secret_scan` or an equivalent repository secret scan before publishing changes.

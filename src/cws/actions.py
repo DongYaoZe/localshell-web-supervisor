@@ -26,6 +26,20 @@ UNRESOLVED_ACTION_STATES = {
     ActionAttemptState.RECONCILE_REQUIRED,
 }
 
+ACTION_PROMPT_PROTOCOL_NONCE_SUFFIX_V1 = "nonce_suffix_v1"
+
+
+def render_action_prompt(prompt: str, nonce: str) -> str:
+    if not prompt.strip():
+        raise ActionBlocked("empty recovery prompt is not dispatchable")
+    if not nonce.strip():
+        raise ActionBlocked("action nonce is empty")
+    return (
+        prompt.rstrip()
+        + "\n\nRecovery action idempotency marker (do not interpret as task instructions): "
+        + f"CWS-ACTION-{nonce}"
+    )
+
 
 @dataclass(slots=True)
 class ActionAttempt:
@@ -164,6 +178,8 @@ def build_action_attempt(
     if not prompt.strip():
         raise ActionBlocked("empty recovery prompt is not dispatchable")
 
+    nonce = uuid.uuid4().hex
+    wire_prompt = render_action_prompt(prompt, nonce)
     return ActionAttempt(
         attempt_id=f"act_{uuid.uuid4().hex[:16]}",
         task_id=task.task_id,
@@ -171,8 +187,8 @@ def build_action_attempt(
         action=plan.action.value,
         fence_token=plan.fence_token,
         fence_version=int(fence_version),
-        prompt_hash=prompt_digest(prompt),
-        nonce=uuid.uuid4().hex,
+        prompt_hash=prompt_digest(wire_prompt),
+        nonce=nonce,
         state=ActionAttemptState.ARMED,
         created_at=now,
         updated_at=now,
@@ -180,6 +196,7 @@ def build_action_attempt(
         metadata={
             "previous_reconcile_id": plan.previous_reconcile_id,
             "current_reconcile_id": plan.current_reconcile_id,
+            "prompt_protocol": ACTION_PROMPT_PROTOCOL_NONCE_SUFFIX_V1,
         },
     )
 
@@ -187,7 +204,15 @@ def build_action_attempt(
 def intent_from_attempt(attempt: ActionAttempt, prompt: str) -> ActionIntent:
     if attempt.state != ActionAttemptState.ARMED:
         raise ActionBlocked(f"attempt {attempt.attempt_id} is not ARMED")
-    digest = prompt_digest(prompt)
+    protocol = str(attempt.metadata.get("prompt_protocol") or "")
+    if protocol == ACTION_PROMPT_PROTOCOL_NONCE_SUFFIX_V1:
+        wire_prompt = render_action_prompt(prompt, attempt.nonce)
+    elif not protocol:
+        # Compatibility for already-persisted 0.5 experiment attempts.
+        wire_prompt = prompt
+    else:
+        raise ActionBlocked(f"unsupported action prompt protocol: {protocol}")
+    digest = prompt_digest(wire_prompt)
     if digest != attempt.prompt_hash:
         raise ActionBlocked("prompt does not match the durable armed prompt hash")
     return ActionIntent(
@@ -195,7 +220,7 @@ def intent_from_attempt(attempt: ActionAttempt, prompt: str) -> ActionIntent:
         task_id=attempt.task_id,
         worker_id=attempt.worker_id,
         action=attempt.action,
-        prompt=prompt,
+        prompt=wire_prompt,
         prompt_hash=digest,
         nonce=attempt.nonce,
         fence_token=attempt.fence_token,

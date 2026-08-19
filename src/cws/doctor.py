@@ -147,14 +147,47 @@ def run_doctor(
             )
         )
 
-    # 0.5 contains an experiment-backed exact-window UIA transport module, but there is still
-    # no production CLI path that enables it. A real caller must also hold a fresh durable
-    # worker-window lease and pass the existing write-ahead/reconciliation fences.
     checks.append(
         DoctorCheck(
             "recovery.transport",
             DoctorStatus.PASS,
-            "gated in 0.5; no production CLI enables UIA mutation transport",
+            "gated by default; 0.6 execution requires explicit one-shot opt-in, exact task confirmation, and all fences",
+        )
+    )
+
+    probe_slots = registry.probe_window_slots()
+    if len(probe_slots) > 1:
+        checks.append(
+            DoctorCheck(
+                "probe.slot",
+                DoctorStatus.FAIL,
+                f"{len(probe_slots)} durable probe slots exist; 0.6 expects at most one reusable slot",
+            )
+        )
+    elif not probe_slots:
+        checks.append(DoctorCheck("probe.slot", DoctorStatus.PASS, "no reusable probe slot is bound"))
+    else:
+        slot = probe_slots[0]
+        fresh = slot.is_fresh(now=now)
+        checks.append(
+            DoctorCheck(
+                "probe.slot",
+                DoctorStatus.PASS if fresh else DoctorStatus.WARN,
+                (
+                    f"slot={slot.slot_id} worker={slot.target_worker_id} fresh={str(fresh).lower()}"
+                    if fresh
+                    else f"slot={slot.slot_id} is stale; reconcile ownership before any replacement window"
+                ),
+            )
+        )
+
+    capabilities = registry.page_capabilities(limit=200)
+    fresh_capabilities = sum(1 for row in capabilities if row.is_fresh(now=now))
+    checks.append(
+        DoctorCheck(
+            "page.capability",
+            DoctorStatus.PASS,
+            f"records={len(capabilities)} time_fresh={fresh_capabilities}; use remains explicit and context-bound",
         )
     )
 

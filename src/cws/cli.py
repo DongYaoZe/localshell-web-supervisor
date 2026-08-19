@@ -11,21 +11,34 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import __version__
-from .actions import apply_unresolved_action_gate
+from .actions import ActionBlocked, apply_unresolved_action_gate
 from .browser import observation_from_dom_payload, observation_from_lsm_snapshot
-from .dispatcher import DispatchPolicy, build_dispatch_plan
+from .capabilities import (
+    CapabilityProvenanceError,
+    build_page_close_capabilities,
+    capability_matches_context,
+    detect_chrome_major,
+    runtime_context,
+)
+from .dispatcher import DispatchDisabled, DispatchPolicy, build_dispatch_plan
+from .dispatch_runtime import (
+    DispatchExecutionPolicy,
+    execute_current_worker_recovery,
+    reconcile_action_with_uia,
+)
 from .doctor import DoctorStatus, run_doctor
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
 from .lifecycle import PageCloseEvidence, evaluate_page_close_evidence
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
-from .models import SupervisorState, WorkerStatus
+from .models import PageCapabilityKind, SupervisorState, WorkerStatus
 from .ram import MemoryProbeUnavailable, observe_system_memory, observe_windows_process_group
 from .reconcile import build_reconciliation_record
 from .recovery import recommend
 from .registry import Registry
 from .scheduler import attention_queue
 from .uia import ChromeUiaProbe, UiaProbeUnavailable
+from .uia_actions import ChromeUiaAckObserver, ChromeUiaActionTransport, UiaActionUnavailable
 from .watchdog_host import (
     inspect_watchdog_host,
     launch_detached_watchdog,
@@ -44,7 +57,7 @@ def default_db_path() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.5 control plane)")
+    p = argparse.ArgumentParser(prog="cws", description="ChatGPT Web task supervisor (safe 0.6 control plane)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--db", default=None, help="registry sqlite path (default: .cws/registry.sqlite3)")
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
@@ -196,14 +209,51 @@ def build_parser() -> argparse.ArgumentParser:
     pool.add_argument("--max-active", type=int, default=4)
     pool.add_argument("--min-free-mib", type=int, default=1024)
     pool.add_argument("--high-memory-fraction", type=float, default=0.85)
-    pool.add_argument(
+    pool_capability = pool.add_mutually_exclusive_group()
+    pool_capability.add_argument(
         "--page-close-evidence",
         help=(
-            "optional local PageCloseEvidence JSON; only a passing generation gate enables "
-            "close_allowed advice for already non-live park candidates"
+            "legacy one-shot PageCloseEvidence JSON; prefer a durable capability id in 0.6"
         ),
     )
+    pool_capability.add_argument(
+        "--page-close-capability",
+        help=(
+            "explicit durable generation capability id, or 'latest'; default remains fail-closed"
+        ),
+    )
+    pool.add_argument(
+        "--browser-major",
+        type=int,
+        help="override local Chrome major used only for capability-context validation",
+    )
     pool.add_argument("--json", action="store_true")
+
+    capability_import = sub.add_parser(
+        "capability-import",
+        help="validate page-close evidence and store versioned deployment-scoped capability records",
+    )
+    capability_import.add_argument("--file", required=True)
+    capability_import.add_argument("--observed-at", type=float)
+    capability_import.add_argument("--scope-host")
+    capability_import.add_argument("--browser-family")
+    capability_import.add_argument("--browser-major", type=int)
+    capability_import.add_argument("--platform")
+    capability_import.add_argument("--surface")
+    capability_import.add_argument("--ttl-hours", type=float, default=24.0)
+    capability_import.add_argument("--json", action="store_true")
+
+    capability_status = sub.add_parser(
+        "capability-status",
+        help="show durable page-close capability provenance and current-context usability",
+    )
+    capability_status.add_argument(
+        "--kind",
+        choices=[kind.value for kind in PageCapabilityKind],
+    )
+    capability_status.add_argument("--browser-major", type=int)
+    capability_status.add_argument("--limit", type=int, default=50)
+    capability_status.add_argument("--json", action="store_true")
 
     ram = sub.add_parser("ram-status", help="show system and aggregate Chrome working-set telemetry")
     ram.add_argument("--json", action="store_true")
@@ -250,7 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     dispatch = sub.add_parser(
         "dispatch-plan",
-        help="dry-run a fenced recovery action; 0.5 production dispatch remains disabled",
+        help="dry-run a fenced recovery action; execution remains explicit and opt-in",
     )
     dispatch.add_argument("task_id")
     dispatch.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
@@ -260,11 +310,50 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--min-network-quiet", type=float, default=5.0)
     dispatch.add_argument("--json", action="store_true")
 
+    dispatch_execute = sub.add_parser(
+        "dispatch-execute",
+        help="explicit one-shot fenced current-worker recovery; disabled unless fully opted in",
+    )
+    dispatch_execute.add_argument("task_id")
+    dispatch_execute.add_argument(
+        "--enable-experimental-uia",
+        action="store_true",
+        help="explicitly enable the gated exact-window UIA transport for this invocation only",
+    )
+    dispatch_execute.add_argument(
+        "--confirm-task",
+        required=True,
+        help="must exactly equal task_id; prevents accidental cross-task execution",
+    )
+    dispatch_execute.add_argument("--max-fence-age", type=float, default=120.0)
+    dispatch_execute.add_argument("--min-fence-separation", type=float, default=3.0)
+    dispatch_execute.add_argument("--min-dom-quiet", type=float, default=5.0)
+    dispatch_execute.add_argument("--min-network-quiet", type=float, default=5.0)
+    dispatch_execute.add_argument("--json", action="store_true")
+
+    action_reconcile_uia = sub.add_parser(
+        "action-reconcile-uia",
+        help="observe one unresolved action and acknowledge only exact single-turn completion evidence",
+    )
+    action_reconcile_uia.add_argument("attempt_id")
+    action_reconcile_uia.add_argument("--json", action="store_true")
+
     rec = sub.add_parser("recommend", help="print safe recovery recommendation for a task")
     rec.add_argument("task_id")
     rec.add_argument("--uia", action="store_true", help="refresh exact-URL Chrome UIA first")
     rec.add_argument("--json", action="store_true")
     return p
+
+
+def _runtime_browser_major(explicit: int | None = None) -> int:
+    if explicit is not None:
+        if int(explicit) <= 0:
+            raise CapabilityProvenanceError("browser major override must be positive")
+        return int(explicit)
+    probe = ChromeUiaProbe()
+    if not probe.chrome_executable:
+        raise CapabilityProvenanceError("local Google Chrome executable was not found")
+    return detect_chrome_major(probe.chrome_executable)
 
 
 def _adapter(args: argparse.Namespace) -> FileLsmTelemetry | None:
@@ -731,6 +820,96 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{check.status.value:4} {check.name:24} {check.detail}")
             return 1 if report.overall == DoctorStatus.FAIL else 0
 
+        if args.command == "capability-import":
+            payload = _read_json_file(args.file)
+            if not isinstance(payload, dict):
+                raise ValueError("page-close evidence JSON must be an object")
+            evidence = PageCloseEvidence(**payload)
+            if args.observed_at is not None:
+                if evidence.observed_at is not None and abs(float(evidence.observed_at) - float(args.observed_at)) > 1e-6:
+                    raise CapabilityProvenanceError(
+                        "--observed-at conflicts with the timestamp already embedded in evidence"
+                    )
+                evidence.observed_at = float(args.observed_at)
+            explicit_provenance = {
+                "scope_host": args.scope_host,
+                "browser_family": args.browser_family,
+                "browser_major": args.browser_major,
+                "platform": args.platform,
+                "surface": args.surface,
+            }
+            for field_name, value in explicit_provenance.items():
+                if value is None:
+                    continue
+                existing = getattr(evidence, field_name)
+                if existing is not None and str(existing).lower() != str(value).lower():
+                    raise CapabilityProvenanceError(
+                        f"--{field_name.replace('_', '-')} conflicts with provenance already embedded in evidence"
+                    )
+                setattr(
+                    evidence,
+                    field_name,
+                    int(value) if field_name == "browser_major" else str(value),
+                )
+            records = build_page_close_capabilities(
+                evidence,
+                ttl_s=max(1.0 / 60.0, float(args.ttl_hours)) * 3600.0,
+            )
+            saved = [registry.record_page_capability(row) for row in records]
+            if args.json:
+                _print_json([asdict(row) for row in saved])
+            else:
+                for row in saved:
+                    print(
+                        f"{row.capability_id} kind={row.kind.value} browser={row.browser_family}"
+                        f"/{row.browser_major} expires_at={row.expires_at:.3f}"
+                    )
+            return 0
+
+        if args.command == "capability-status":
+            kind = PageCapabilityKind(args.kind) if args.kind else None
+            rows = registry.page_capabilities(kind=kind, limit=args.limit)
+            context = None
+            context_error = None
+            if rows:
+                try:
+                    context = runtime_context(
+                        browser_major=_runtime_browser_major(args.browser_major)
+                    )
+                except CapabilityProvenanceError as exc:
+                    context_error = str(exc)
+            output = []
+            for row in rows:
+                if context is None:
+                    usable = False
+                    blockers = ["runtime_context_unavailable"]
+                else:
+                    usable, blockers = capability_matches_context(
+                        row,
+                        context,
+                        expected_kind=row.kind,
+                    )
+                item = asdict(row)
+                item["usable_now"] = usable
+                item["blockers"] = blockers
+                if context_error:
+                    item["context_error"] = context_error
+                output.append(item)
+            if args.json:
+                _print_json(output)
+            elif not output:
+                print("No durable page-close capabilities.")
+            else:
+                for item in output:
+                    print(
+                        f"{item['capability_id']} {item['kind']} usable={str(item['usable_now']).lower()} "
+                        f"browser={item['browser_family']}/{item['browser_major']} "
+                        f"expires_at={item['expires_at']:.3f}"
+                    )
+                    if item["blockers"]:
+                        print("  blockers: " + ", ".join(item["blockers"]))
+            return 0
+
         if args.command == "pool-plan":
             try:
                 system_memory = observe_system_memory()
@@ -753,7 +932,38 @@ def main(argv: list[str] | None = None) -> int:
                 lsm = _refresh_lsm(registry, task.task_id, adapter)
                 pool_rows.append((task, worker, browser, lsm))
             page_close_capability = False
-            if args.page_close_evidence:
+            selected_page_close_capability_id = None
+            if args.page_close_capability:
+                context = runtime_context(
+                    browser_major=_runtime_browser_major(args.browser_major)
+                )
+                if args.page_close_capability == "latest":
+                    candidates = registry.page_capabilities(
+                        kind=PageCapabilityKind.GENERATION,
+                        limit=100,
+                    )
+                else:
+                    candidates = [registry.get_page_capability(args.page_close_capability)]
+                candidate_blockers = []
+                for candidate in candidates:
+                    usable, blockers = capability_matches_context(
+                        candidate,
+                        context,
+                        expected_kind=PageCapabilityKind.GENERATION,
+                    )
+                    if usable:
+                        selected_page_close_capability_id = candidate.capability_id
+                        page_close_capability = True
+                        break
+                    candidate_blockers.append(
+                        f"{candidate.capability_id}:" + ",".join(blockers)
+                    )
+                if not page_close_capability:
+                    raise CapabilityProvenanceError(
+                        "no requested durable generation capability is usable in the current context"
+                        + (" (" + "; ".join(candidate_blockers) + ")" if candidate_blockers else "")
+                    )
+            elif args.page_close_evidence:
                 evidence_payload = _read_json_file(args.page_close_evidence)
                 if not isinstance(evidence_payload, dict):
                     raise ValueError("page-close evidence JSON must be an object")
@@ -780,13 +990,20 @@ def main(argv: list[str] | None = None) -> int:
                 policy=policy,
             )
             if args.json:
-                _print_json(asdict(plan))
+                plan_payload = asdict(plan)
+                plan_payload["page_close_capability_id"] = selected_page_close_capability_id
+                plan_payload["legacy_page_close_evidence_used"] = bool(args.page_close_evidence)
+                _print_json(plan_payload)
             else:
                 print(
                     f"memory={plan.memory_pressure} workers={plan.active_worker_count} "
                     f"pinned={plan.pinned_worker_count} "
                     f"park_candidates={plan.park_candidate_count}"
                 )
+                if selected_page_close_capability_id:
+                    print(f"capability: {selected_page_close_capability_id}")
+                elif args.page_close_evidence:
+                    print("capability: legacy one-shot evidence (not durable provenance)")
                 for item in plan.items:
                     print(
                         f"{item.disposition.value:14} {item.task_id:20} "
@@ -964,6 +1181,106 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"blocker: {blocker}")
             return 0
 
+        if args.command == "dispatch-execute":
+            if not args.enable_experimental_uia:
+                raise DispatchDisabled(
+                    "dispatch execution remains disabled unless --enable-experimental-uia is explicit"
+                )
+            if args.confirm_task != args.task_id:
+                raise DispatchDisabled("--confirm-task must exactly match task_id")
+            previous = registry.latest_reconciliation(args.task_id)
+            task, browser, lsm, workspace, result = _assessment(
+                registry,
+                args.task_id,
+                adapter,
+                workspace_probe,
+                ChromeUiaProbe(),
+                reconcile_workspace=True,
+                refresh_uia=True,
+            )
+            current = _record_current_reconciliation(
+                registry,
+                task,
+                browser,
+                lsm,
+                workspace,
+                result,
+            )
+            rec = recommend(task, result, lsm, workspace)
+            plan = build_dispatch_plan(
+                task,
+                rec,
+                previous=previous,
+                current=current,
+                policy=DispatchPolicy(
+                    max_reconciliation_age_s=max(1.0, float(args.max_fence_age)),
+                    min_reconciliation_separation_s=max(
+                        0.0, float(args.min_fence_separation)
+                    ),
+                    min_dom_quiet_s=max(0.0, float(args.min_dom_quiet)),
+                    min_network_quiet_s=max(0.0, float(args.min_network_quiet)),
+                    transport_enabled=True,
+                ),
+            )
+            plan = apply_unresolved_action_gate(
+                plan,
+                registry.unresolved_action_attempt(task.task_id),
+            )
+            execution = execute_current_worker_recovery(
+                registry,
+                plan=plan,
+                recommendation=rec,
+                policy=DispatchExecutionPolicy(
+                    enabled=True,
+                    confirmed_task_id=args.confirm_task,
+                ),
+                transport_factory=lambda binding: ChromeUiaActionTransport.from_binding(
+                    binding,
+                    enabled=True,
+                ),
+            )
+            registry.record_recovery_event(
+                task.task_id,
+                action=f"dispatch_execute:{execution.state}",
+                safe_to_dispatch=execution.submitted,
+                reason=execution.detail,
+                payload={
+                    "attempt_id": execution.attempt_id,
+                    "dispatch_plan": asdict(plan),
+                    "side_effect_possible": execution.side_effect_possible,
+                },
+            )
+            if args.json:
+                _print_json(asdict(execution))
+            else:
+                print(
+                    f"attempt={execution.attempt_id} state={execution.state} "
+                    f"submitted={str(execution.submitted).lower()}"
+                )
+                print(execution.detail)
+            return 0 if execution.submitted or execution.side_effect_possible else 12
+
+        if args.command == "action-reconcile-uia":
+            attempt = registry.get_action_attempt(args.attempt_id)
+            task = registry.get_task(attempt.task_id)
+            _refresh_uia(registry, task.task_id, ChromeUiaProbe())
+            reconciled = reconcile_action_with_uia(
+                registry,
+                attempt_id=attempt.attempt_id,
+                observer_factory=lambda chrome: ChromeUiaAckObserver(
+                    chrome_executable=chrome
+                ),
+            )
+            if args.json:
+                _print_json(asdict(reconciled))
+            else:
+                print(
+                    f"{reconciled.attempt_id} state={reconciled.state} "
+                    f"acknowledged={str(reconciled.acknowledged).lower()}"
+                )
+                print(reconciled.detail)
+            return 0 if reconciled.acknowledged else 9
+
         if args.command == "recommend":
             task, browser, lsm, workspace, result = _assessment(
                 registry,
@@ -1079,6 +1396,9 @@ def main(argv: list[str] | None = None) -> int:
     except CdpProbeUnavailable as exc:
         print(f"CDP probe unavailable: {exc}", file=sys.stderr)
         return 7
+    except (DispatchDisabled, ActionBlocked, UiaActionUnavailable) as exc:
+        print(f"dispatch blocked: {exc}", file=sys.stderr)
+        return 12
     except (ValueError, json.JSONDecodeError) as exc:
         print(f"invalid input: {exc}", file=sys.stderr)
         return 2

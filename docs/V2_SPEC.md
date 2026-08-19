@@ -20,7 +20,7 @@ Default planning targets:
 
 ### `DO_NOT_CLOSE`
 
-0.5 still pins a worker when any strong/ambiguous live condition exists:
+0.6 still pins a worker when any strong/ambiguous live condition exists:
 
 - LSM in-flight tool call;
 - tracked active job;
@@ -28,7 +28,7 @@ Default planning targets:
 - browser reports active generation;
 - task state `STARTING`, `RUNNING`, `RECOVERING`, `RECONCILING`, `SUSPECT`, or `NEEDS_HUMAN`.
 
-This remains true even though isolated experiments now prove that generation and one real Local Shell tool chain can survive page closure. Automatic live-worker closing is a separate policy decision and is **not enabled** in 0.5.
+This remains true even though isolated experiments prove that generation and one real Local Shell tool chain can survive page closure. Automatic live-worker closing is a separate policy decision and is **not enabled** in 0.6.
 
 ### `PARK_CANDIDATE`
 
@@ -39,7 +39,7 @@ Terminal/idle states with no live evidence are ranked:
 3. `QUEUED`;
 4. `BLOCKED`.
 
-0.5 has authenticated ChatGPT evidence for ordinary page close/reopen continuity, but the release does not hard-code that capability globally. `pool-plan` defaults to `page_close_experiment_passed=false`; only `--page-close-evidence FILE` with a passing local generation gate can mark these already non-live candidates `close_allowed=true`. The planner itself still does not close pages; it only reports permission/advice.
+The release does not hard-code page-close capability globally. `pool-plan` defaults to `page_close_experiment_passed=false`. In 0.6, validated evidence can be imported into a versioned, expiring, context-bound capability and then explicitly selected with `--page-close-capability`; the legacy `--page-close-evidence FILE` path remains compatible. Only already non-live candidates can become `close_allowed=true`. The planner itself still does not close pages.
 
 ### `NO_PAGE`
 
@@ -56,7 +56,7 @@ Roles:
 - `ACTIVE`: page assigned to an executing/interactive worker;
 - `PROBE`: small reusable page pool for sequentially revisiting parked URLs.
 
-The pool fails closed on capacity instead of implicitly evicting a page. A probe policy may block visual-only image/media/font resources, while documents, scripts, stylesheets, XHR/fetch, and WebSocket remain available for state detection.
+The pool fails closed on capacity instead of implicitly evicting a page. Schema v4 additionally records at most one reusable durable probe slot: same-target observation reuses it; another parked target requires exact-close-before-open; stale or ambiguous ownership blocks rather than opening another window. The actual probe-window mutation transport remains disabled by default in 0.6. A probe policy may block visual-only image/media/font resources, while documents, scripts, stylesheets, XHR/fetch, and WebSocket remain available for state detection.
 
 ## Empirical page-close findings
 
@@ -66,7 +66,7 @@ The key question was whether ChatGPT work continues when no page displays the co
 
 A normally authenticated disposable window was closed while a positive Stop control showed generation in progress. No other window displayed the conversation. After 15 seconds, reopening the exact conversation showed the complete expected long response and no duplicate user turn.
 
-Result: `generation_parking_safe` can be proven by the 0.5 evidence evaluator.
+Result: `generation_parking_safe` can be proven by the evidence evaluator and, in 0.6, represented as durable capability provenance tied to the experiment time and runtime context.
 
 ### Local Shell tool execution
 
@@ -85,11 +85,15 @@ Run the evidence gate with:
 python -m cws evaluate-page-close --file .cws\page-close-evidence.json --json
 ```
 
-The same passing evidence can be supplied explicitly to non-live pool advice:
+The preferred 0.6 path validates/imports evidence once and then explicitly selects the durable capability:
 
 ```powershell
-python -m cws pool-plan --page-close-evidence .cws\page-close-evidence.json --json
+python -m cws capability-import --file .cws\page-close-evidence.json --json
+python -m cws capability-status --json
+python -m cws pool-plan --page-close-capability latest --json
 ```
+
+The one-shot `--page-close-evidence` path remains for compatibility.
 
 For a worker that may have live tool execution:
 
@@ -107,10 +111,10 @@ The two gates are intentionally distinct: ordinary generation evidence never sil
 The experiment proves capability on the inspected deployment, not universal browser/platform semantics forever. Before production automatic live-page parking, CWS still needs a deliberate policy that binds:
 
 - exact current worker URL/HWND;
-- fresh page-close capability evidence;
+- an explicitly selected, context-matching, unexpired page-close capability;
 - durable LSM execution state;
 - recovery/checkpoint guarantees;
 - RAM-pressure policy;
-- reopen/probe guarantees.
+- single-slot reopen/probe guarantees with no implicit page proliferation.
 
 Until that policy is explicit, `live_lsm` and `generating=True` remain `DO_NOT_CLOSE`. This preserves the conservative behavior while removing the earlier uncertainty about whether page closure necessarily kills the work.

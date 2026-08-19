@@ -41,6 +41,14 @@ class PageCloseEvidence:
     tool_running_at_close: bool = False
     tool_completed_after_close: bool = False
     tool_final_response_after_reopen: bool = False
+    # Optional schema-v4 provenance. The legacy evaluator ignores these fields, while durable
+    # capability import requires them (or explicit operator-supplied equivalents) and fails closed.
+    observed_at: float | None = None
+    scope_host: str | None = None
+    browser_family: str | None = None
+    browser_major: int | None = None
+    platform: str | None = None
+    surface: str | None = None
 
 
 @dataclass(slots=True)

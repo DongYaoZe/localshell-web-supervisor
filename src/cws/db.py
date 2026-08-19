@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = r"""
 PRAGMA foreign_keys = ON;
@@ -126,6 +126,41 @@ CREATE TABLE IF NOT EXISTS worker_window_bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_worker_window_bindings_expires
     ON worker_window_bindings(expires_at);
+CREATE TABLE IF NOT EXISTS probe_window_slots (
+    slot_id TEXT PRIMARY KEY,
+    owner_token TEXT NOT NULL,
+    target_worker_id TEXT NOT NULL,
+    target_conversation_url TEXT NOT NULL,
+    actual_url TEXT NOT NULL,
+    window_handle INTEGER NOT NULL,
+    browser_pid INTEGER NOT NULL,
+    chrome_executable TEXT NOT NULL,
+    source TEXT NOT NULL,
+    bound_at REAL NOT NULL,
+    observed_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_probe_window_slots_expires
+    ON probe_window_slots(expires_at);
+CREATE TABLE IF NOT EXISTS page_capabilities (
+    capability_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    scope_host TEXT NOT NULL,
+    browser_family TEXT NOT NULL,
+    browser_major INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    isolation_mode TEXT NOT NULL,
+    evaluator_version TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    source_experiment_id TEXT NOT NULL,
+    observed_at REAL NOT NULL,
+    recorded_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_page_capabilities_kind_expires
+    ON page_capabilities(kind, expires_at DESC);
 """
 
 

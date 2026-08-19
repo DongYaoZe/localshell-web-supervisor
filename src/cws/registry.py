@@ -12,6 +12,9 @@ from .models import (
     BrowserObservation,
     LsmObservation,
     NetworkObservation,
+    PageCapabilityKind,
+    PageCapabilityRecord,
+    ProbeWindowSlotBinding,
     ReconciliationRecord,
     SupervisorState,
     TaskRecord,
@@ -177,6 +180,66 @@ class Registry:
             ),
         )
         self._conn.commit()
+
+    def record_recovery_action_attempt(self, attempt: ActionAttempt) -> None:
+        """Atomically persist an ARMED recovery action and consume one recovery budget slot."""
+        if attempt.state != ActionAttemptState.ARMED:
+            raise ValueError("recovery action must be ARMED before durable recording")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            task_row = self._conn.execute(
+                "SELECT current_worker_id, recovery_attempts, max_recovery_attempts FROM tasks WHERE task_id = ?",
+                (attempt.task_id,),
+            ).fetchone()
+            if task_row is None:
+                raise KeyError(f"unknown task: {attempt.task_id}")
+            if int(task_row["recovery_attempts"]) >= int(task_row["max_recovery_attempts"]):
+                raise RuntimeError("recovery attempt budget is exhausted")
+            worker_row = self._conn.execute(
+                "SELECT task_id, status FROM workers WHERE worker_id = ?", (attempt.worker_id,)
+            ).fetchone()
+            if worker_row is None:
+                raise KeyError(f"unknown worker: {attempt.worker_id}")
+            if worker_row["task_id"] != attempt.task_id:
+                raise ValueError("action attempt worker belongs to a different task")
+            if task_row["current_worker_id"] != attempt.worker_id or worker_row["status"] != WorkerStatus.ACTIVE.value:
+                raise RuntimeError("recovery action worker is no longer the active current worker")
+            states = tuple(state.value for state in UNRESOLVED_ACTION_STATES)
+            placeholders = ",".join("?" for _ in states)
+            unresolved = self._conn.execute(
+                f"SELECT attempt_id FROM action_attempts WHERE task_id = ? AND state IN ({placeholders}) LIMIT 1",
+                (attempt.task_id, *states),
+            ).fetchone()
+            if unresolved is not None:
+                raise RuntimeError(
+                    f"task {attempt.task_id} already has unresolved action {unresolved['attempt_id']}"
+                )
+            payload = asdict(attempt)
+            payload["state"] = attempt.state.value
+            self._conn.execute(
+                """INSERT INTO action_attempts
+                   (attempt_id, task_id, worker_id, state, created_at, updated_at, payload_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    attempt.attempt_id,
+                    attempt.task_id,
+                    attempt.worker_id,
+                    attempt.state.value,
+                    attempt.created_at,
+                    attempt.updated_at,
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+            self._conn.execute(
+                """UPDATE tasks
+                   SET recovery_attempts = recovery_attempts + 1, updated_at = ?
+                   WHERE task_id = ?""",
+                (attempt.created_at, attempt.task_id),
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
 
     def get_action_attempt(self, attempt_id: str) -> ActionAttempt:
         row = self._conn.execute(
@@ -684,6 +747,176 @@ class Registry:
         )
         self._conn.commit()
         return cursor.rowcount == 1
+
+    def record_page_capability(self, capability: PageCapabilityRecord) -> PageCapabilityRecord:
+        if not capability.capability_id.strip() or not capability.evidence_digest.strip():
+            raise ValueError("page capability requires id and evidence digest")
+        self._conn.execute(
+            """INSERT INTO page_capabilities
+               (capability_id, kind, scope_host, browser_family, browser_major, platform,
+                surface, isolation_mode, evaluator_version, evidence_digest,
+                source_experiment_id, observed_at, recorded_at, expires_at, payload_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(capability_id) DO UPDATE SET
+                   recorded_at=excluded.recorded_at,
+                   expires_at=excluded.expires_at,
+                   payload_json=excluded.payload_json""",
+            (
+                capability.capability_id,
+                capability.kind.value,
+                capability.scope_host,
+                capability.browser_family,
+                int(capability.browser_major),
+                capability.platform,
+                capability.surface,
+                capability.isolation_mode,
+                capability.evaluator_version,
+                capability.evidence_digest,
+                capability.source_experiment_id,
+                float(capability.observed_at),
+                float(capability.recorded_at),
+                float(capability.expires_at),
+                json.dumps(capability.metadata, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        self._conn.commit()
+        return self.get_page_capability(capability.capability_id)
+
+    def get_page_capability(self, capability_id: str) -> PageCapabilityRecord:
+        row = self._conn.execute(
+            "SELECT * FROM page_capabilities WHERE capability_id = ?", (capability_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown page capability: {capability_id}")
+        return PageCapabilityRecord(
+            capability_id=row["capability_id"],
+            kind=PageCapabilityKind(row["kind"]),
+            scope_host=row["scope_host"],
+            browser_family=row["browser_family"],
+            browser_major=int(row["browser_major"]),
+            platform=row["platform"],
+            surface=row["surface"],
+            isolation_mode=row["isolation_mode"],
+            evaluator_version=row["evaluator_version"],
+            evidence_digest=row["evidence_digest"],
+            source_experiment_id=row["source_experiment_id"],
+            observed_at=float(row["observed_at"]),
+            recorded_at=float(row["recorded_at"]),
+            expires_at=float(row["expires_at"]),
+            metadata=json.loads(row["payload_json"]),
+        )
+
+    def page_capabilities(
+        self,
+        *,
+        kind: PageCapabilityKind | None = None,
+        limit: int = 100,
+    ) -> list[PageCapabilityRecord]:
+        if kind is None:
+            rows = self._conn.execute(
+                "SELECT capability_id FROM page_capabilities "
+                "ORDER BY observed_at DESC, capability_id LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT capability_id FROM page_capabilities WHERE kind = ? "
+                "ORDER BY observed_at DESC, capability_id LIMIT ?",
+                (kind.value, max(1, int(limit))),
+            ).fetchall()
+        return [self.get_page_capability(row["capability_id"]) for row in rows]
+
+    def bind_probe_window_slot(
+        self,
+        slot_id: str,
+        *,
+        owner_token: str,
+        target_worker_id: str,
+        target_conversation_url: str,
+        actual_url: str,
+        window_handle: int,
+        browser_pid: int,
+        chrome_executable: str,
+        source: str = "windows_uia_cws_probe",
+        observed_at: float | None = None,
+        ttl_s: float = 120.0,
+    ) -> ProbeWindowSlotBinding:
+        worker = self.get_worker(target_worker_id)
+        if worker.status != WorkerStatus.PARKED:
+            raise ValueError("probe slot binding requires a parked worker")
+        other_slot = self._conn.execute(
+            "SELECT slot_id FROM probe_window_slots WHERE slot_id <> ? LIMIT 1", (slot_id,)
+        ).fetchone()
+        if other_slot is not None:
+            raise ValueError(
+                f"0.6 supports only one durable probe slot; existing slot is {other_slot['slot_id']}"
+            )
+        if not slot_id.strip() or not owner_token.strip():
+            raise ValueError("probe slot requires non-empty slot id and owner token")
+        if int(window_handle) <= 0 or int(browser_pid) <= 0:
+            raise ValueError("probe slot requires positive HWND and browser PID")
+        if not chrome_executable.strip():
+            raise ValueError("probe slot requires a Chrome executable path")
+        if worker.conversation_url.rstrip("/") != target_conversation_url.rstrip("/"):
+            raise ValueError("probe slot target URL must match the registered worker URL")
+        observed_at = time.time() if observed_at is None else float(observed_at)
+        ttl_s = max(1.0, float(ttl_s))
+        existing = self.get_probe_window_slot(slot_id)
+        bound_at = existing.bound_at if existing else observed_at
+        self._conn.execute(
+            """INSERT INTO probe_window_slots
+               (slot_id, owner_token, target_worker_id, target_conversation_url, actual_url,
+                window_handle, browser_pid, chrome_executable, source, bound_at, observed_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(slot_id) DO UPDATE SET
+                   owner_token=excluded.owner_token,
+                   target_worker_id=excluded.target_worker_id,
+                   target_conversation_url=excluded.target_conversation_url,
+                   actual_url=excluded.actual_url,
+                   window_handle=excluded.window_handle,
+                   browser_pid=excluded.browser_pid,
+                   chrome_executable=excluded.chrome_executable,
+                   source=excluded.source,
+                   observed_at=excluded.observed_at,
+                   expires_at=excluded.expires_at""",
+            (slot_id, owner_token, target_worker_id, target_conversation_url, actual_url,
+             int(window_handle), int(browser_pid), chrome_executable, source, bound_at,
+             observed_at, observed_at + ttl_s),
+        )
+        self._conn.commit()
+        slot = self.get_probe_window_slot(slot_id)
+        assert slot is not None
+        return slot
+
+    def get_probe_window_slot(
+        self, slot_id: str, *, now: float | None = None, require_fresh: bool = False
+    ) -> ProbeWindowSlotBinding | None:
+        row = self._conn.execute(
+            "SELECT * FROM probe_window_slots WHERE slot_id = ?", (slot_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        slot = ProbeWindowSlotBinding(
+            slot_id=row["slot_id"], owner_token=row["owner_token"],
+            target_worker_id=row["target_worker_id"],
+            target_conversation_url=row["target_conversation_url"], actual_url=row["actual_url"],
+            window_handle=int(row["window_handle"]), browser_pid=int(row["browser_pid"]),
+            chrome_executable=row["chrome_executable"], source=row["source"],
+            bound_at=float(row["bound_at"]), observed_at=float(row["observed_at"]),
+            expires_at=float(row["expires_at"]),
+        )
+        if require_fresh and not slot.is_fresh(now=time.time() if now is None else float(now)):
+            return None
+        return slot
+
+    def clear_probe_window_slot(self, slot_id: str) -> bool:
+        cur = self._conn.execute("DELETE FROM probe_window_slots WHERE slot_id = ?", (slot_id,))
+        self._conn.commit()
+        return cur.rowcount == 1
+
+    def probe_window_slots(self) -> list[ProbeWindowSlotBinding]:
+        rows = self._conn.execute("SELECT slot_id FROM probe_window_slots ORDER BY slot_id").fetchall()
+        return [slot for row in rows if (slot := self.get_probe_window_slot(row["slot_id"])) is not None]
 
     def track_job(self, task_id: str, job_id: str) -> None:
         self.get_task(task_id)

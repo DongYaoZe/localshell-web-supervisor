@@ -134,13 +134,13 @@ even if two supervisor processes race. Transport exceptions or ambiguous outcome
 `FAILED`. Positive observation bound to the same attempt/worker is required before
 `ACKNOWLEDGED` releases the duplicate-send lock.
 
-0.5 adds schema-v3 short-lived worker-window leases binding worker id to exact conversation
+0.5 added schema-v3 short-lived worker-window leases binding worker id to exact conversation
 URL, top-level HWND, Chrome PID/executable, observation time, and expiry. HWND is not durable
 identity: leases expire quickly and are cleared when a worker is superseded/parked/dead. The
-experiment-backed UIA sender/ACK observer requires a fresh binding and revalidates the same
-identity immediately before mutation. It is still gated: no production CLI or dispatcher
-enables it, and there is no manual CLI shortcut that can fabricate acknowledgement. See
-`ACTIONS.md`.
+UIA sender/ACK observer requires a fresh binding and revalidates the same identity immediately
+before mutation. In 0.6 it is reachable only through the explicit one-shot fenced executor;
+the resident watchdog still cannot auto-enable it, and no CLI shortcut can fabricate
+acknowledgement. See `ACTIONS.md` and `V4_SPEC.md`.
 
 ## RAM / concurrency model
 
@@ -165,14 +165,15 @@ copied-auth, anonymous, localhost-only, ambiguous-window, duplicate-turn, and un
 signature cases fail closed. `--require-tool` additionally requires exact job identity,
 running-at-close, completed-after-close, and final-response evidence. See `EXPERIMENTS.md`.
 
-The implemented V2 control layer now makes that uncertainty explicit. `pool-plan` pins
-any worker with live/ambiguous task or LSM evidence and ranks only terminal/queued/blocked
-workers as parking candidates. In 0.5 those already non-live candidates may report
-`close_allowed=true` because the generation/page evidence gate passed; live LSM and active
-generation remain unconditionally pinned. Page closing is not performed. `PagePool` separately tracks
-ephemeral active/probe page leases, fails closed on capacity instead of evicting a page,
-and rotates parked worker URLs through a small reusable probe queue. Durable worker/task
-identity remains in SQLite, never in the browser page ID.
+The implemented V2 control layer makes that uncertainty explicit. `pool-plan` pins any
+worker with live/ambiguous task or LSM evidence and ranks only terminal/queued/blocked workers
+as parking candidates. In 0.6, non-live `close_allowed` advice still requires explicit local
+capability selection (or the legacy one-shot evidence input); live LSM and active generation
+remain unconditionally pinned. Page closing is not performed. `PagePool` separately tracks
+ephemeral active/probe page leases, while schema v4 adds one durable reusable probe-slot
+record. Same-target probes reuse that slot; different targets require exact-close-before-open;
+stale or ambiguous ownership blocks rather than causing page proliferation. Durable
+worker/task identity remains in SQLite, never in the browser page ID.
 
 System and aggregate Chrome working-set telemetry provide pressure evidence, but Chrome's
 multi-process model means a single window-process working set is not attributed to one tab.
@@ -224,18 +225,19 @@ the browser-worker identity/action boundary and revalidation rules are proven in
 
 ### V2
 Low-memory worker planning + active/probe page lease pool + parking bookkeeping + RAM
-telemetry. The original V2 layer kept ChatGPT page-close as an experiment gate. 0.5 later produced
-authenticated continuity evidence, but the production V2 planner still does not close live
-workers automatically.
+telemetry. The original V2 layer kept ChatGPT page-close as an experiment gate. 0.5 later
+produced authenticated continuity evidence; 0.6 stores that evidence as expiring, versioned,
+deployment-scoped capabilities. The V2 planner still does not close live workers automatically.
 
 ### V3
 Evidence-based NO-GO on private ChatGPT endpoint reimplementation. V3 instead added a
-mandatory two-sample semantic fence and deterministic dry-run dispatcher. At the V3
-milestone, even a fully passing plan had `transport_enabled=false` / `would_dispatch=false`
-and no ChatGPT mutation adapter existed. The later 0.5 milestone adds a gated exact-window
-UIA module without changing the production dry-run/auto-dispatch policy. Takeover remains
-blocked until a separately bound replacement worker and LSM-supported takeover transition
-can be proven safely in isolation. See `V3_DECISION.md` and `V3_SPEC.md`.
+mandatory two-sample semantic fence and deterministic dry-run dispatcher. Normal 0.6
+`dispatch-plan` behavior still has `transport_enabled=false` / `would_dispatch=false`.
+A separate explicit one-shot executor may enable the exact-window UIA module only after
+all V3 semantic fences plus 0.6 action/window/task-confirmation/budget checks pass. The
+resident watchdog does not call it automatically. Takeover remains blocked until a
+separately bound replacement worker and LSM-supported takeover transition can be proven
+safely in isolation. See `V3_DECISION.md`, `V3_SPEC.md`, and `V4_SPEC.md`.
 
 ### 0.4 control-plane milestone
 Durable write-ahead action attempts, schema-v2 duplicate-action fencing, strict isolated
@@ -244,8 +246,15 @@ implemented.
 
 ### 0.5 exact-window evidence milestone
 Authenticated same-profile disposable-window experiments proved pure-generation continuity
-and one harmless live-LSM-job continuity across close/reopen. UIA observation now rejects
-ambiguous same-URL windows unless exact HWND identity is available. Schema v3 adds short-lived
-worker-window leases, and a gated exact-window UIA sender/nonce-hash acknowledgement module
-exists behind the write-ahead fence. Production dispatch and live-worker page eviction remain
-disabled; capability evidence does not override `DO_NOT_CLOSE` policy.
+and one harmless live-LSM-job continuity across close/reopen. UIA observation rejects
+ambiguous same-URL windows unless exact top-level window identity is available. Schema v3
+added short-lived worker-window leases and the gated exact-window UIA sender/ack observer.
+
+### 0.6 reusable-page and explicit-execution milestone
+Schema v4 adds durable versioned page-capability provenance and an at-most-one reusable
+probe-slot record. Recovery prompts carry a durable per-attempt marker, and ARMED recovery
+state plus budget consumption are committed atomically before submission. `dispatch-execute`
+is an explicit one-shot current-worker continuation behind exact task confirmation and all
+existing semantic/LSM/workspace/window/action fences; `action-reconcile-uia` releases the lock
+only from positive single-turn completion evidence. Normal planning remains dry-run, the
+resident watchdog does not auto-dispatch, and live-worker page eviction remains disabled.
