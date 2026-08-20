@@ -634,6 +634,7 @@ class Registry:
             ChildSpawnAttemptState.WINDOW_BOUND: {
                 ChildSpawnAttemptState.PROMPT_SUBMITTED,
                 ChildSpawnAttemptState.RECONCILE_REQUIRED,
+                ChildSpawnAttemptState.FAILED,
             },
             ChildSpawnAttemptState.PROMPT_SUBMITTED: {
                 ChildSpawnAttemptState.WINDOW_BOUND,
