@@ -18,7 +18,7 @@ from lws.child_spawn import (
     tagged_project_url,
 )
 from lws.db import SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8
-from lws.models import ChildSpawnAttemptState, WorkspaceObservation
+from lws.models import ChildSpawnAttempt, ChildSpawnAttemptState, WorkspaceObservation
 from lws.registry import Registry
 
 
@@ -390,7 +390,7 @@ class ChildSpawnTests(unittest.TestCase):
         raw.close()
         migrated = Registry(db)
         try:
-            self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], 10)
             columns = {
                 row["name"] for row in migrated._conn.execute("PRAGMA table_info(child_dispatches)")
             }
@@ -432,10 +432,52 @@ class ChildSpawnTests(unittest.TestCase):
         raw.close()
         migrated = Registry(db)
         try:
-            self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], 9)
+            self.assertEqual(migrated._conn.execute("PRAGMA user_version").fetchone()[0], 10)
             self.assertEqual(migrated.get_child_dispatch("c8").web_project_url, PROJECT)
         finally:
             migrated.close()
+
+    @patch("lws.child_spawn.os.name", "nt")
+    @patch("lws.child_spawn._run_ps")
+    def test_completed_spawn_close_revalidates_exact_conversation_identity(self, run_ps):
+        run_ps.return_value = {
+            "closed": True,
+            "absent": False,
+            "ambiguous": False,
+            "detail": "exact terminal child window close requested",
+        }
+        source = ChildSpawnAttempt(
+            attempt_id="spawn_terminal",
+            child_task_id="source",
+            state=ChildSpawnAttemptState.COMPLETED,
+            owner_token="spawn_terminal:owner",
+            project_url=PROJECT_SLUG,
+            project_id=PROJECT_ID,
+            tagged_project_url=PROJECT_SLUG + "#lws-child=spawn_terminal:owner",
+            prompt_sha256="0" * 64,
+            chrome_executable=CHROME,
+            created_at=1,
+            updated_at=2,
+            window_handle=777,
+            browser_pid=888,
+            conversation_url=CONVERSATION,
+            worker_id="worker_source",
+        )
+        transport = ChromeUiaChildSpawnTransport(chrome_executable=CHROME, enabled=True)
+        result = transport.close_completed_spawn_authorized(source_attempt=source)
+        self.assertTrue(result.changed)
+        env = run_ps.call_args.kwargs["env"]
+        self.assertEqual(env["LWS_EXPECTED_HWND"], "777")
+        self.assertEqual(env["LWS_EXPECTED_BROWSER_PID"], "888")
+        self.assertEqual(env["LWS_EXPECTED_URL_1"], CONVERSATION)
+
+        run_ps.reset_mock()
+        source.metadata["window_recycled_to"] = "spawn_next"
+        consumed = transport.close_completed_spawn_authorized(source_attempt=source)
+        self.assertFalse(consumed.changed)
+        self.assertIn("already consumed", consumed.detail)
+        run_ps.assert_not_called()
+
 
 
 if __name__ == "__main__":

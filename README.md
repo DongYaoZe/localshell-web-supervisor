@@ -106,7 +106,7 @@ lws child-create PARENT_TASK `
   --json
 ```
 
-`child-create` performs no browser, Local Shell, or Git mutation.
+`child-create` performs no browser, Local Shell, or Git mutation. For Chinese/non-ASCII paths or prompts in automation, prefer a UTF-8 JSON `--contract-file` (or ASCII-safe `--contract-b64`) instead of raw PowerShell command-line arguments; LWS rejects obvious pre-ingestion replacement-character/broken-Windows-path corruption.
 
 For an existing child conversation:
 
@@ -127,6 +127,7 @@ lws child-spawn-open SPAWN_ATTEMPT `
 lws child-spawn-send SPAWN_ATTEMPT `
   --enable-normal-browser-mutation `
   --confirm-child CHILD_TASK `
+  --wait-cooldown `
   --json
 ```
 
@@ -141,6 +142,18 @@ A child should bind its Local Shell durable session back to LWS:
 ```powershell
 lws child-bind-session CHILD_TASK --session-id s_child
 ```
+
+For a persisted batch, use a bounded dispatcher pool instead of opening one window per child:
+
+```powershell
+lws child-dispatch-batch PARENT_TASK `
+  --max-windows 2 `
+  --enable-normal-browser-mutation `
+  --confirm-parent PARENT_TASK `
+  --json
+```
+
+The command is intentionally one-shot. It advances every child that is safe to advance, pauses normally when all dispatcher slots belong to children that have not bound a durable LSM session yet, and can be invoked again after those bindings appear. It reuses the exact HWND only after LSM binding or terminal completion, stops before replaying any ambiguous open/send outcome, and closes exact terminal child pages when no undispatched child still needs the slot. Use `--keep-terminal-pages` to retain terminal pages for inspection.
 
 After independent verification, finish the durable child with a concrete completion reference:
 

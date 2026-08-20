@@ -144,7 +144,7 @@ class ProbeMutationRegistryTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(SCHEMA_VERSION, 9)
+                self.assertEqual(SCHEMA_VERSION, 10)
                 self.assertEqual(
                     registry._conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION
                 )

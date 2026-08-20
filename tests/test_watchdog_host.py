@@ -10,6 +10,7 @@ from lws.watchdog_host import (
     inspect_watchdog_host,
     launch_detached_watchdog,
     pid_exists,
+    watchdog_creationflags,
 )
 
 
@@ -50,6 +51,12 @@ class WatchdogHostTests(unittest.TestCase):
         )
         self.assertIn("--uia", command)
         self.assertIn("--auto-recover-timeouts", command)
+
+    def test_windows_watchdog_creationflags_include_no_console_window(self):
+        flags = watchdog_creationflags("nt")
+        self.assertTrue(flags & 0x00000008)  # DETACHED_PROCESS
+        self.assertTrue(flags & 0x00000200)  # CREATE_NEW_PROCESS_GROUP
+        self.assertTrue(flags & 0x08000000)  # CREATE_NO_WINDOW
 
     def test_cooperative_stop_fences_old_and_new_owner(self):
         now = time.time()

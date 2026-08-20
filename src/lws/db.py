@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Kept as a named baseline so migration tests can construct a real schema-v5 database.
 SCHEMA_V5 = r"""
@@ -289,7 +289,19 @@ SCHEMA_V9 = r"""
 -- web_project_url when present.
 """
 
-SCHEMA = SCHEMA_V5 + SCHEMA_V6 + SCHEMA_V7 + SCHEMA_V8 + SCHEMA_V9
+SCHEMA_V10 = r"""
+CREATE TABLE IF NOT EXISTS runtime_cooldowns (
+    name TEXT PRIMARY KEY,
+    until_at REAL NOT NULL,
+    reason TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_cooldowns_until
+    ON runtime_cooldowns(until_at);
+"""
+
+SCHEMA = SCHEMA_V5 + SCHEMA_V6 + SCHEMA_V7 + SCHEMA_V8 + SCHEMA_V9 + SCHEMA_V10
 
 
 def connect(path: str | Path) -> sqlite3.Connection:

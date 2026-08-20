@@ -28,6 +28,7 @@ from .dispatch_runtime import (
 )
 from .doctor import DoctorStatus, run_doctor
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
+from .child_batch import advance_child_dispatch_batch, default_transport_factory
 from .child_spawn import (
     ChildSpawnBlocked,
     ChromeUiaChildSpawnTransport,
@@ -40,7 +41,7 @@ from .child_spawn import (
 from .lifecycle import PageCloseEvidence, evaluate_page_close_evidence
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
-from .models import PageCapabilityKind, SupervisorState, WorkerStatus
+from .models import Assessment, PageCapabilityKind, SupervisorState, WorkerStatus
 from .probe_operator import (
     classify_probe_operation,
     load_probe_reconciliation_evidence,
@@ -108,12 +109,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="persist one durable child assignment; does not open a browser or mutate Git",
     )
     child_create.add_argument("parent_task_id")
-    child_create.add_argument("--child-key", required=True)
+    contract_group = child_create.add_mutually_exclusive_group()
+    contract_group.add_argument(
+        "--contract-file",
+        help="UTF-8/UTF-8-BOM JSON child contract; preferred for non-ASCII automation",
+    )
+    contract_group.add_argument(
+        "--contract-b64",
+        help="base64-encoded UTF-8 JSON child contract; ASCII-safe automation transport",
+    )
+    child_create.add_argument("--child-key")
     child_create.add_argument("--child-task-id")
-    child_create.add_argument("--project", required=True)
-    child_create.add_argument("--objective", required=True)
-    child_create.add_argument("--cwd", required=True)
-    prompt_group = child_create.add_mutually_exclusive_group(required=True)
+    child_create.add_argument("--project")
+    child_create.add_argument("--objective")
+    child_create.add_argument("--cwd")
+    prompt_group = child_create.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt")
     prompt_group.add_argument("--prompt-file")
     child_create.add_argument("--expected-branch")
@@ -185,6 +195,23 @@ def build_parser() -> argparse.ArgumentParser:
     child_spawn_send.add_argument("--enable-normal-browser-mutation", action="store_true")
     child_spawn_send.add_argument("--confirm-child", required=True)
     child_spawn_send.add_argument("--lease-seconds", type=float, default=7200.0)
+    child_spawn_send.add_argument(
+        "--rate-limit-cooldown",
+        type=float,
+        default=120.0,
+        help="seconds to pause global child dispatch after a Too many requests modal",
+    )
+    child_spawn_send.add_argument(
+        "--wait-cooldown",
+        action="store_true",
+        help="wait through one persisted rate-limit cooldown and retry the same pre-send child safely",
+    )
+    child_spawn_send.add_argument(
+        "--max-cooldown-wait",
+        type=float,
+        default=600.0,
+        help="maximum seconds child-spawn-send may wait when --wait-cooldown is enabled",
+    )
     child_spawn_send.add_argument("--json", action="store_true")
 
     child_spawn_reconcile = sub.add_parser(
@@ -201,6 +228,27 @@ def build_parser() -> argparse.ArgumentParser:
     child_spawn_status.add_argument("child_task_id")
     child_spawn_status.add_argument("--limit", type=int, default=20)
     child_spawn_status.add_argument("--json", action="store_true")
+
+    child_dispatch_batch = sub.add_parser(
+        "child-dispatch-batch",
+        help=(
+            "advance persisted children through a bounded exact-window dispatcher pool; "
+            "stops before replaying ambiguous browser outcomes"
+        ),
+    )
+    child_dispatch_batch.add_argument("parent_task_id")
+    child_dispatch_batch.add_argument("--max-windows", type=int, default=2)
+    child_dispatch_batch.add_argument("--chrome-executable")
+    child_dispatch_batch.add_argument("--max-evidence-age", type=float, default=60.0)
+    child_dispatch_batch.add_argument("--lease-seconds", type=float, default=7200.0)
+    child_dispatch_batch.add_argument("--enable-normal-browser-mutation", action="store_true")
+    child_dispatch_batch.add_argument("--confirm-parent", required=True)
+    child_dispatch_batch.add_argument(
+        "--keep-terminal-pages",
+        action="store_true",
+        help="do not close exact terminal child pages after all children have been dispatched",
+    )
+    child_dispatch_batch.add_argument("--json", action="store_true")
 
     replacement_register = sub.add_parser(
         "replacement-register",
@@ -654,6 +702,27 @@ def _assessment(
     refresh_uia: bool = False,
 ):
     task = registry.get_task(task_id)
+    try:
+        protocol = registry.load_worker_protocol(task_id)
+    except KeyError:
+        protocol = None
+    if protocol is not None and protocol.task_status.value == "completed":
+        if task.state != SupervisorState.COMPLETED:
+            registry.update_state(task_id, SupervisorState.COMPLETED)
+            task = registry.get_task(task_id)
+        browser = registry.latest_browser_observation(task.current_worker_id)
+        return (
+            task,
+            browser,
+            None,
+            None,
+            Assessment(
+                SupervisorState.COMPLETED,
+                "durable worker-protocol task is already completed",
+                "high",
+                ["worker_protocol.task_status=completed"],
+            ),
+        )
     lsm = _refresh_lsm(registry, task_id, adapter)
     if refresh_uia and uia_probe is not None:
         try:
@@ -951,13 +1020,118 @@ def _auto_recover_timeout_cycle(
 
 
 def _print_json(data) -> None:
-    print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+    # Keep machine-readable stdout ASCII-only so Windows PowerShell/OEM code pages
+    # cannot corrupt non-ASCII text while capturing a native process. JSON consumers
+    # reconstruct the original Unicode from escapes.
+    print(json.dumps(data, indent=2, ensure_ascii=True, default=str))
 
 
 def _read_json_file(path: str | Path):
     # PowerShell 5.1's `Set-Content -Encoding UTF8` writes a UTF-8 BOM.
     # utf-8-sig accepts both BOM-prefixed and ordinary UTF-8 JSON.
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
+
+
+def _decode_utf8_json_b64(value: str) -> dict:
+    import base64
+
+    try:
+        raw = base64.b64decode(str(value), validate=True)
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("--contract-b64 must contain base64-encoded UTF-8 JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("child contract must be a JSON object")
+    return payload
+
+
+def _reject_likely_cli_text_corruption(field: str, value: str | None) -> None:
+    if value is None:
+        return
+    text = str(value)
+    # U+FFFD is conclusive evidence that decoding already lost bytes. A '?' inside a
+    # Windows path is impossible and is the common PowerShell/code-page failure mode
+    # seen during child fan-out, including paths embedded inside objective/prompt text.
+    broken_windows_path = bool(
+        __import__("re").search(r"(?i)\b[A-Z]:\\[^\r\n]*\?", text)
+    )
+    if "\ufffd" in text or (field == "cwd" and "?" in text) or broken_windows_path:
+        raise ValueError(
+            f"{field} appears encoding-corrupted before LWS ingestion; "
+            "use child-create --contract-file or --contract-b64 with UTF-8"
+        )
+
+
+def _child_create_contract(args) -> dict:
+    if args.contract_file or args.contract_b64:
+        individual = {
+            "child_key": args.child_key,
+            "child_task_id": args.child_task_id,
+            "project": args.project,
+            "objective": args.objective,
+            "cwd": args.cwd,
+            "prompt": args.prompt,
+            "prompt_file": args.prompt_file,
+            "expected_branch": args.expected_branch,
+            "base_ref": args.base_ref,
+            "web_project_url": args.web_project_url,
+            "metadata_json": args.metadata_json,
+        }
+        if any(value is not None for value in individual.values()):
+            raise ValueError(
+                "--contract-file/--contract-b64 cannot be combined with individual child-create fields"
+            )
+        payload = (
+            _read_json_file(args.contract_file)
+            if args.contract_file
+            else _decode_utf8_json_b64(args.contract_b64)
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("child contract must be a JSON object")
+        allowed = {
+            "child_key", "child_task_id", "project", "objective", "cwd", "prompt_text",
+            "expected_branch", "base_ref", "web_project_url", "metadata",
+        }
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise ValueError(f"unknown child contract fields: {', '.join(unknown)}")
+        metadata = payload.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            raise ValueError("child contract metadata must be a JSON object")
+        result = dict(payload)
+        result["metadata"] = metadata
+    else:
+        prompt_text = (
+            args.prompt
+            if args.prompt is not None
+            else (
+                Path(args.prompt_file).read_text(encoding="utf-8-sig")
+                if args.prompt_file
+                else None
+            )
+        )
+        metadata = json.loads(args.metadata_json) if args.metadata_json else {}
+        if not isinstance(metadata, dict):
+            raise ValueError("--metadata-json must be a JSON object")
+        result = {
+            "child_key": args.child_key,
+            "child_task_id": args.child_task_id,
+            "project": args.project,
+            "objective": args.objective,
+            "cwd": args.cwd,
+            "prompt_text": prompt_text,
+            "expected_branch": args.expected_branch,
+            "base_ref": args.base_ref,
+            "web_project_url": args.web_project_url,
+            "metadata": metadata,
+        }
+
+    for required in ("child_key", "project", "objective", "cwd", "prompt_text"):
+        if result.get(required) is None or not str(result[required]).strip():
+            raise ValueError(f"child-create requires {required}")
+    for field in ("project", "objective", "cwd", "prompt_text"):
+        _reject_likely_cli_text_corruption(field, result.get(field))
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -980,26 +1154,19 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "child-create":
-            prompt_text = (
-                args.prompt
-                if args.prompt is not None
-                else Path(args.prompt_file).read_text(encoding="utf-8-sig")
-            )
-            metadata = json.loads(args.metadata_json) if args.metadata_json else {}
-            if not isinstance(metadata, dict):
-                raise ValueError("--metadata-json must be a JSON object")
+            contract = _child_create_contract(args)
             dispatch = registry.create_child_dispatch(
                 args.parent_task_id,
-                child_key=args.child_key,
-                child_task_id=args.child_task_id,
-                project=args.project,
-                objective=args.objective,
-                cwd=args.cwd,
-                prompt_text=prompt_text,
-                expected_branch=args.expected_branch,
-                base_ref=args.base_ref,
-                web_project_url=args.web_project_url,
-                metadata=metadata,
+                child_key=contract["child_key"],
+                child_task_id=contract.get("child_task_id"),
+                project=contract["project"],
+                objective=contract["objective"],
+                cwd=contract["cwd"],
+                prompt_text=contract["prompt_text"],
+                expected_branch=contract.get("expected_branch"),
+                base_ref=contract.get("base_ref"),
+                web_project_url=contract.get("web_project_url"),
+                metadata=contract.get("metadata") or {},
             )
             if args.json:
                 _print_json(asdict(dispatch))
@@ -1145,13 +1312,31 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 success = result.state.value == "WINDOW_BOUND"
             else:
-                result = execute_child_spawn_prompt(
-                    registry,
-                    attempt_id=args.attempt_id,
-                    transport=transport,
-                    lease_seconds=args.lease_seconds,
+                wait_deadline = time.time() + max(0.0, float(args.max_cooldown_wait))
+                while True:
+                    result = execute_child_spawn_prompt(
+                        registry,
+                        attempt_id=args.attempt_id,
+                        transport=transport,
+                        lease_seconds=args.lease_seconds,
+                        rate_limit_cooldown_s=args.rate_limit_cooldown,
+                    )
+                    cooldown_until = float(result.metadata.get("cooldown_until") or 0.0)
+                    remaining = cooldown_until - time.time()
+                    if (
+                        result.state.value == "WINDOW_BOUND"
+                        and remaining > 0
+                        and args.wait_cooldown
+                        and time.time() + remaining <= wait_deadline
+                    ):
+                        time.sleep(remaining + 0.25)
+                        continue
+                    break
+                cooldown_handled = (
+                    result.state.value == "WINDOW_BOUND"
+                    and float(result.metadata.get("cooldown_until") or 0.0) > time.time()
                 )
-                success = result.state.value == "COMPLETED"
+                success = result.state.value == "COMPLETED" or cooldown_handled
             if args.json:
                 _print_json(child_spawn_payload(result))
             else:
@@ -1193,6 +1378,58 @@ def main(argv: list[str] | None = None) -> int:
                         f"project={attempt.project_id} conversation={attempt.conversation_url or '-'}"
                     )
             return 0
+
+        if args.command == "child-dispatch-batch":
+            if args.confirm_parent != args.parent_task_id:
+                raise ChildSpawnBlocked(
+                    ["--confirm-parent must exactly match the durable parent task id"]
+                )
+            if not args.enable_normal_browser_mutation:
+                raise ChildSpawnBlocked(
+                    ["normal-browser batch dispatch is disabled without explicit opt-in"]
+                )
+            if args.max_windows <= 0 or args.max_windows > 16:
+                raise ValueError("--max-windows must be between 1 and 16")
+            chrome_executable = args.chrome_executable or ChromeUiaProbe().chrome_executable
+            if not chrome_executable:
+                raise ChildSpawnBlocked(
+                    ["Google Chrome executable is required for child batch dispatch"]
+                )
+            report = advance_child_dispatch_batch(
+                registry,
+                parent_task_id=args.parent_task_id,
+                max_windows=args.max_windows,
+                chrome_executable=chrome_executable,
+                workspace_loader=lambda child_task_id: _refresh_workspace(
+                    registry, child_task_id, workspace_probe
+                ),
+                transport_factory=default_transport_factory,
+                lease_seconds=args.lease_seconds,
+                max_evidence_age_s=args.max_evidence_age,
+                close_terminal_pages=not args.keep_terminal_pages,
+            )
+            if args.json:
+                _print_json(report.payload())
+            else:
+                print(
+                    f"parent={report.parent_task_id} dispatched={report.dispatched_children}/"
+                    f"{report.total_children} sessions={report.bound_session_children} "
+                    f"pool={report.pool_windows}/{report.max_windows} pending={report.pending_children}"
+                )
+                for event in report.events:
+                    source = (
+                        f" source={event.source_child_task_id}"
+                        if event.source_child_task_id else ""
+                    )
+                    print(
+                        f"{event.child_task_id}: {event.action}; {event.detail}"
+                        f"{source}"
+                    )
+                if report.waiting_for_binding:
+                    print("waiting_lsm=" + ",".join(report.waiting_for_binding))
+                if report.stopped:
+                    print(f"STOP: {report.stop_reason}", file=sys.stderr)
+            return 14 if report.stopped else 0
 
         if args.command == "replacement-register":
             state = registry.register_replacement_candidate(

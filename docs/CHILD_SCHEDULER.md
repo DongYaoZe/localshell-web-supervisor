@@ -47,6 +47,31 @@ python -m lws child-create PARENT_TASK `
 
 `child-create` performs no browser, Local Shell MCP, or Git mutation. The prompt and its digest become durable dispatch state before a child conversation exists.
 
+### Non-ASCII child contracts
+
+Do not pass Chinese or other non-ASCII paths/prompts through a raw PowerShell command-line argument chain. That shell/code-page boundary can corrupt text before LWS sees it. Automation should instead write one UTF-8 JSON contract at an ASCII-safe path and pass only that path:
+
+```json
+{
+  "child_key": "worker-cn",
+  "child_task_id": "CHILD_TASK",
+  "project": "my-project",
+  "objective": "inspect Chinese source material without changing paths",
+  "cwd": "D:\\worktrees\\unicode-task",
+  "prompt_text": "Read the assigned source; preserve all non-ASCII path text exactly.",
+  "web_project_url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef",
+  "metadata": {"wave": "W1"}
+}
+```
+
+```powershell
+python -m lws child-create PARENT_TASK `
+  --contract-file C:\lws-contracts\worker-cn.json `
+  --json
+```
+
+`--contract-b64` accepts the same JSON encoded as UTF-8 and then base64, which is useful when even the contract-file path must cross an ASCII-only automation boundary. Raw child-create input containing U+FFFD or an impossible `?` inside a Windows path is rejected instead of being durably persisted.
+
 For a manually created existing child conversation, skip the spawn steps and run:
 
 ```powershell
@@ -78,8 +103,13 @@ Only after it reaches `WINDOW_BOUND`, explicitly authorize the persisted prompt 
 python -m lws child-spawn-send SPAWN_ATTEMPT `
   --enable-normal-browser-mutation `
   --confirm-child CHILD_TASK `
+  --wait-cooldown `
   --json
 ```
+
+For tracked batch dispatchers, `--wait-cooldown` handles ChatGPT's `Too many requests` dialog as a proven **pre-send throttle state**. LWS detects the exact-window dialog before touching the composer, invokes `Got it` when that exact control is available, persists the global `web_child_dispatch` cooldown, and leaves the child in `WINDOW_BOUND`. The default cooldown is 120 seconds; `--rate-limit-cooldown` and `--max-cooldown-wait` bound it. A different child cannot bypass the same cooldown by taking the dispatcher immediately.
+
+A new `/c/...` route is also not sufficient proof of delivery. LWS requires the persisted prompt to be consumed or generation to start; if the first Send only creates the route while leaving the exact same prompt send-ready, it may perform at most one durably recorded second-stage Send. It never performs a third automatic replay.
 
 If either browser command returns an ambiguous state, **do not rerun it**. Reconcile instead:
 
@@ -89,6 +119,32 @@ python -m lws child-spawn-status CHILD_TASK --json
 ```
 
 A result is successful only when the exact bound LWS-owned HWND becomes a conversation inside the expected stable web project id.
+
+### Bounded batch dispatch
+
+When many children are already persisted, prefer the batch helper over manually opening one page per task:
+
+```powershell
+python -m lws child-dispatch-batch PARENT_TASK `
+  --max-windows 2 `
+  --enable-normal-browser-mutation `
+  --confirm-parent PARENT_TASK `
+  --json
+```
+
+`child-dispatch-batch` is an explicit one-shot advancement command, not a hidden resident loop. It composes the existing `child-spawn-arm`, `child-spawn-open`, and `child-spawn-send` state machines and reports every action. Run it again after children bind their durable LSM sessions.
+
+The pool rules are intentionally strict:
+
+- `--max-windows` bounds the number of exact child dispatcher pages (1-16, default 2).
+- A nonterminal child keeps its exact page until `child-bind-session` has durably recorded its LSM session. The batch will report `awaiting_lsm_binding` or `pool_wait` rather than stealing that page.
+- Once a nonterminal child has a durable LSM session, its exact worker HWND may be navigated to the next persisted child. The old child continues through its durable worker/LSM state and no longer owns the browser binding.
+- A terminal child may be recycled or closed even if it never bound an LSM session. `child-complete` clears the legacy worker binding, so terminal ownership is recovered from the newest unconsumed `COMPLETED` spawn record for that exact HWND/PID. Successful reuse/close durably marks that spawn record consumed so an older history record cannot reclaim the page later.
+- If no undispatched child remains, exact terminal child pages are closed by default. `--keep-terminal-pages` disables that cleanup for operator inspection.
+- `WINDOW_OPEN_SUBMITTED`, `PROMPT_SUBMITTED`, and `RECONCILE_REQUIRED` are batch stop states. The helper performs this ambiguity preflight for all children before starting any new browser mutation. Reconcile first; never use the batch command as a blind retry mechanism.
+- The same normal-browser mutation opt-in and exact parent confirmation are required as for the individual spawn commands. The helper does not copy authentication state, call private endpoints, or bypass provider/browser controls.
+
+A normal pool-full result is not a failure. The expected operator loop is: persist many children, run the batch helper, let dispatched children bind LSM, run the helper again, and let the exact bounded set of dispatcher windows move forward through the queue.
 
 ## 5. Child-agent bootstrap contract
 

@@ -44,6 +44,15 @@ _POWERSHELL_ACTION = r'''
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class LwsNativeInput {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}
+"@
 
 function Get-Value([System.Windows.Automation.AutomationElement]$e) {
     try {
@@ -70,12 +79,33 @@ function Find-ByAutomationId(
     return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
 }
 
-function Emit([bool]$submitted, [bool]$sideEffectPossible, [string]$phase, [string]$detail) {
+function Norm-Prompt([string]$value) {
+    if ($null -eq $value) { return '' }
+    return ($value -replace "`r`n", "`n")
+}
+function Same-Prompt([string]$observed, [string]$expected) {
+    $left = Norm-Prompt $observed
+    $right = Norm-Prompt $expected
+    if ($left -ceq $right) { return $true }
+    if ($right.EndsWith("`n") -and $left -ceq $right.Substring(0, $right.Length - 1)) { return $true }
+    return $false
+}
+
+function Emit(
+    [bool]$submitted,
+    [bool]$sideEffectPossible,
+    [string]$phase,
+    [string]$detail,
+    [bool]$rateLimited = $false,
+    [bool]$modalDismissed = $false
+) {
     $obj = [pscustomobject]@{
         submitted = $submitted
         side_effect_possible = $sideEffectPossible
         phase = $phase
         detail = $detail
+        rate_limited = $rateLimited
+        modal_dismissed = $modalDismissed
     }
     $json = $obj | ConvertTo-Json -Compress -Depth 4
     [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
@@ -143,13 +173,40 @@ try {
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::Button
     )
-    $buttons = $doc.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCond)
+    $buttons = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $buttonCond)
     $loginControl = $false
     $profileControl = $false
+    $gotItButton = $null
     for ($i = 0; $i -lt $buttons.Count; $i++) {
         $name = [string]$buttons.Item($i).Current.Name
         if ($name -match '^(Log in|Sign in|Sign up|登录|免费注册)$') { $loginControl = $true }
         if ($name -match 'Profile|Account|个人资料') { $profileControl = $true }
+        if ($name -match '^(Got it|知道了|我知道了)$') { $gotItButton = $buttons.Item($i) }
+    }
+    $rateLimitVisible = $false
+    $allDescendants = $window.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    )
+    for ($i = 0; $i -lt $allDescendants.Count; $i++) {
+        $name = [string]$allDescendants.Item($i).Current.Name
+        if (-not $name) { continue }
+        if ($name -match 'Too many requests|making requests too quickly|temporarily limited access to your conversations|Please wait a few minutes|请求过多|请求太频繁|请稍等几分钟') {
+            $rateLimitVisible = $true
+            break
+        }
+    }
+    if ($rateLimitVisible) {
+        $dismissed = $false
+        if ($gotItButton) {
+            try {
+                $gotItInvoke = $gotItButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                if ($gotItInvoke) { $gotItInvoke.Invoke(); $dismissed = $true }
+            } catch {}
+        }
+        $detail = if ($dismissed) { 'Too many requests modal dismissed; retry only after cooldown' } else { 'Too many requests modal observed; retry only after cooldown' }
+        Emit $false $false 'rate_limited' $detail $true $dismissed
+        exit 0
     }
     if ($loginControl -or -not $profileControl) {
         Emit $false $false $phase 'positive signed-in profile evidence is missing'
@@ -161,17 +218,34 @@ try {
         Emit $false $false $phase 'prompt-textarea is not present'
         exit 0
     }
-    $existingSend = Find-ByAutomationId $doc 'composer-submit-button'
-    if ($existingSend -and [bool]$existingSend.Current.IsEnabled -and -not [bool]$existingSend.Current.IsOffscreen) {
-        Emit $false $false $phase 'composer already has a send-ready draft; refusing to overwrite it'
-        exit 0
-    }
-
     $promptBytes = [Convert]::FromBase64String($env:LWS_PROMPT_B64)
     $prompt = [Text.Encoding]::UTF8.GetString($promptBytes)
     if (-not $prompt.Trim()) {
         Emit $false $false $phase 'prompt is empty'
         exit 0
+    }
+    $existingSend = Find-ByAutomationId $doc 'composer-submit-button'
+    if ($existingSend -and [bool]$existingSend.Current.IsEnabled -and -not [bool]$existingSend.Current.IsOffscreen) {
+        $existingValue = Get-Value $composer
+        if (-not (Same-Prompt $existingValue $prompt)) {
+            Emit $false $false $phase 'composer already has a different send-ready draft; refusing to overwrite it'
+            exit 0
+        }
+        try {
+            $existingInvoke = $existingSend.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+            if (-not $existingInvoke) {
+                Emit $false $false $phase 'exact persisted draft Send control lacks InvokePattern'
+                exit 0
+            }
+            $phase = 'invoking_existing_exact_draft'
+            $sideEffectPossible = $true
+            $existingInvoke.Invoke()
+            Emit $true $true 'invoke_returned' 'exact persisted send-ready draft invoked without rewriting composer'
+            exit 0
+        } catch {
+            Emit $false $true $phase 'existing exact-draft Send outcome ambiguous'
+            exit 0
+        }
     }
     $valuePattern = $composer.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
     if (-not $valuePattern) {
@@ -202,7 +276,31 @@ try {
         }
     }
     if (-not $send) {
-        Emit $false $true $phase 'positive ready Send control did not appear within the bounded post-draft wait'
+        # ValuePattern may not notify React. Nudge only the exact composer when its text
+        # still equals the persisted prompt and the exact HWND is positively foreground.
+        $currentValue = Get-Value $composer
+        if (Same-Prompt $currentValue $prompt) {
+            [void][LwsNativeInput]::SetForegroundWindow([IntPtr]$expectedHwnd)
+            Start-Sleep -Milliseconds 50
+            if ([LwsNativeInput]::GetForegroundWindow().ToInt64() -eq $expectedHwnd) {
+                try {
+                    $composer.SetFocus()
+                    [System.Windows.Forms.SendKeys]::SendWait(' ')
+                    [System.Windows.Forms.SendKeys]::SendWait('{BACKSPACE}')
+                    for ($i = 0; $i -lt 20; $i++) {
+                        Start-Sleep -Milliseconds 50
+                        $candidate = Find-ByAutomationId $window 'composer-submit-button'
+                        if ($candidate -and [bool]$candidate.Current.IsEnabled -and -not [bool]$candidate.Current.IsOffscreen) {
+                            $send = $candidate
+                            break
+                        }
+                    }
+                } catch {}
+            }
+        }
+    }
+    if (-not $send) {
+        Emit $false $true $phase 'positive ready Send control did not appear within the bounded post-draft wait/synchronization'
         exit 0
     }
     try {

@@ -7,11 +7,48 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from lws.cli import _read_json_file, main
+from lws.cli import _assessment, _read_json_file, main
+from lws.models import SupervisorState
+from lws.registry import Registry
 from lws.ram import MemoryProbeUnavailable
 
 
 class CliInputTests(unittest.TestCase):
+    def test_watchdog_assessment_preserves_completed_worker_protocol_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "registry.sqlite3"
+            registry = Registry(db)
+            try:
+                registry.register_task(
+                    task_id="terminal",
+                    project="lws",
+                    objective="terminal fixture",
+                    cwd=td,
+                )
+                state = registry.bootstrap_worker_protocol("terminal")
+                completed = registry.protocol_complete_task(
+                    "terminal",
+                    completion_ref="fixture:done",
+                    expected_revision=state.revision,
+                    now=10,
+                )
+                self.assertTrue(completed.accepted)
+                registry.update_state("terminal", SupervisorState.COMPLETED)
+
+                task, browser, lsm, workspace, result = _assessment(
+                    registry,
+                    "terminal",
+                    object(),
+                    object(),
+                )
+                self.assertEqual(task.state, SupervisorState.COMPLETED)
+                self.assertEqual(result.state, SupervisorState.COMPLETED)
+                self.assertIsNone(lsm)
+                self.assertIsNone(workspace)
+                self.assertIn("worker-protocol", result.reason)
+            finally:
+                registry.close()
+
     def test_json_file_accepts_utf8_bom(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "payload.json"
@@ -318,6 +355,20 @@ class CliInputTests(unittest.TestCase):
                 self.assertEqual(code, 12)
                 assessment.assert_not_called()
                 self.assertIn("dispatch blocked", err.getvalue())
+
+    def test_child_dispatch_batch_requires_explicit_mutation_opt_in(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = str(Path(td) / "registry.sqlite3")
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = main([
+                    "--db", db,
+                    "child-dispatch-batch", "parent",
+                    "--confirm-parent", "parent",
+                ])
+            self.assertEqual(code, 14)
+            self.assertIn("explicit opt-in", err.getvalue())
+
 
 
 if __name__ == "__main__":

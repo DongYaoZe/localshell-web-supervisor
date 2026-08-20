@@ -37,6 +37,18 @@ class WatchdogLaunchResult:
     detail: str
 
 
+def watchdog_creationflags(platform: str | None = None) -> int:
+    """Return detached/no-console flags for the resident watchdog process."""
+
+    if (os.name if platform is None else platform) != "nt":
+        return 0
+    return (
+        getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    )
+
+
 def pid_exists(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -172,10 +184,7 @@ def launch_detached_watchdog(
     creationflags = 0
     start_new_session = False
     if os.name == "nt":
-        creationflags = (
-            getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        )
+        creationflags = watchdog_creationflags("nt")
     else:
         start_new_session = True
 

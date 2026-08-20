@@ -555,6 +555,30 @@ class Registry:
         payload["state"] = ChildSpawnAttemptState(payload["state"])
         return ChildSpawnAttempt(**payload)
 
+    def annotate_child_spawn_attempt(
+        self,
+        attempt_id: str,
+        *,
+        metadata_updates: dict,
+        now: float | None = None,
+    ) -> ChildSpawnAttempt:
+        """Merge durable metadata onto a spawn record without changing its state."""
+
+        attempt = self.get_child_spawn_attempt(attempt_id)
+        attempt.metadata = {**attempt.metadata, **dict(metadata_updates)}
+        attempt.updated_at = time.time() if now is None else float(now)
+        payload = _child_spawn_attempt_payload(attempt)
+        cursor = self._conn.execute(
+            """UPDATE child_spawn_attempts
+               SET updated_at = ?, payload_json = ? WHERE attempt_id = ?""",
+            (attempt.updated_at, payload, attempt.attempt_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise KeyError(f"unknown child spawn attempt: {attempt_id}")
+        self._conn.commit()
+        return self.get_child_spawn_attempt(attempt_id)
+
     def unresolved_child_spawn_attempt(self, child_task_id: str) -> ChildSpawnAttempt | None:
         states = tuple(
             state.value
@@ -593,6 +617,7 @@ class Registry:
         conversation_url: str | None = None,
         worker_id: str | None = None,
         last_error: str | None = None,
+        metadata_updates: dict | None = None,
         now: float | None = None,
     ) -> ChildSpawnAttempt:
         attempt = self.get_child_spawn_attempt(attempt_id)
@@ -621,9 +646,7 @@ class Registry:
                 ChildSpawnAttemptState.RECONCILE_REQUIRED,
             },
         }
-        if state == attempt.state:
-            return attempt
-        if state not in allowed.get(attempt.state, set()):
+        if state != attempt.state and state not in allowed.get(attempt.state, set()):
             raise RuntimeError(
                 f"invalid child spawn transition {attempt.state.value} -> {state.value}"
             )
@@ -639,6 +662,8 @@ class Registry:
             attempt.worker_id = str(worker_id).strip() or None
         if last_error is not None:
             attempt.last_error = str(last_error)[:1000]
+        if metadata_updates:
+            attempt.metadata.update(dict(metadata_updates))
         payload = _child_spawn_attempt_payload(attempt)
         cursor = self._conn.execute(
             """UPDATE child_spawn_attempts
@@ -650,6 +675,54 @@ class Registry:
             raise KeyError(f"unknown child spawn attempt: {attempt_id}")
         self._conn.commit()
         return self.get_child_spawn_attempt(attempt_id)
+
+
+    def set_runtime_cooldown(
+        self,
+        name: str,
+        *,
+        until_at: float,
+        reason: str,
+        metadata: dict | None = None,
+        now: float | None = None,
+    ) -> dict:
+        key = str(name).strip()
+        note = str(reason).strip()
+        if not key or not note:
+            raise ValueError("runtime cooldown name and reason are required")
+        ts = time.time() if now is None else float(now)
+        until = float(until_at)
+        if until <= ts:
+            raise ValueError("runtime cooldown must end in the future")
+        payload = dict(metadata or {})
+        self._conn.execute(
+            """INSERT INTO runtime_cooldowns(name, until_at, reason, updated_at, payload_json)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   until_at=excluded.until_at, reason=excluded.reason,
+                   updated_at=excluded.updated_at, payload_json=excluded.payload_json""",
+            (key, until, note, ts, json.dumps(payload, ensure_ascii=False, sort_keys=True)),
+        )
+        self._conn.commit()
+        return self.get_runtime_cooldown(key) or {}
+
+    def get_runtime_cooldown(self, name: str) -> dict | None:
+        key = str(name).strip()
+        if not key:
+            raise ValueError("runtime cooldown name is required")
+        row = self._conn.execute(
+            "SELECT name, until_at, reason, updated_at, payload_json FROM runtime_cooldowns WHERE name = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "name": row["name"],
+            "until_at": float(row["until_at"]),
+            "reason": row["reason"],
+            "updated_at": float(row["updated_at"]),
+            "metadata": json.loads(row["payload_json"] or "{}"),
+        }
 
     def bootstrap_worker_protocol(
         self,

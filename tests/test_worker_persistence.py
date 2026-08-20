@@ -115,9 +115,9 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(SCHEMA_VERSION, 9)
+                self.assertEqual(SCHEMA_VERSION, 10)
                 self.assertEqual(
-                    registry._conn.execute("PRAGMA user_version").fetchone()[0], 9
+                    registry._conn.execute("PRAGMA user_version").fetchone()[0], 10
                 )
                 for table in (
                     "worker_protocol_tasks",
@@ -200,7 +200,7 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
 
             registry = Registry(db)
             try:
-                self.assertEqual(registry._conn.execute("PRAGMA user_version").fetchone()[0], 9)
+                self.assertEqual(registry._conn.execute("PRAGMA user_version").fetchone()[0], 10)
                 self.assertEqual(registry.get_task("root").objective, "keep v6")
                 self.assertEqual(
                     registry.load_worker_protocol("root").lineage.root_task_id, "root"
@@ -217,7 +217,7 @@ class WorkerProtocolMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "future.sqlite3"
             raw = sqlite3.connect(db)
-            raw.execute("PRAGMA user_version = 10")
+            raw.execute("PRAGMA user_version = 11")
             raw.commit()
             raw.close()
             with self.assertRaisesRegex(RuntimeError, "unsupported LWS registry schema"):
