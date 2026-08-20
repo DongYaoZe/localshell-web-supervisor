@@ -702,9 +702,9 @@ def _assessment(
     refresh_uia: bool = False,
 ):
     task = registry.get_task(task_id)
-    try:
+    if registry.worker_protocol_exists(task_id):
         protocol = registry.load_worker_protocol(task_id)
-    except KeyError:
+    else:
         protocol = None
     if protocol is not None and protocol.task_status.value == "completed":
         if task.state != SupervisorState.COMPLETED:

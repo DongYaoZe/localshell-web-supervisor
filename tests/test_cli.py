@@ -14,6 +14,41 @@ from lws.ram import MemoryProbeUnavailable
 
 
 class CliInputTests(unittest.TestCase):
+    def test_watchdog_assessment_accepts_new_task_before_protocol_bootstrap(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "registry.sqlite3"
+            registry = Registry(db)
+            try:
+                registry.register_task(
+                    task_id="fresh",
+                    project="lws",
+                    objective="fresh fixture",
+                    cwd=td,
+                )
+                self.assertFalse(registry.worker_protocol_exists("fresh"))
+                with (
+                    patch("lws.cli._refresh_lsm", return_value=None),
+                    patch(
+                        "lws.cli.assess",
+                        return_value=__import__("lws.models", fromlist=["Assessment"]).Assessment(
+                            SupervisorState.QUEUED,
+                            "fresh legacy task",
+                            "low",
+                            [],
+                        ),
+                    ),
+                ):
+                    task, _browser, _lsm, _workspace, result = _assessment(
+                        registry,
+                        "fresh",
+                        object(),
+                        object(),
+                    )
+                self.assertEqual(task.task_id, "fresh")
+                self.assertEqual(result.state, SupervisorState.QUEUED)
+            finally:
+                registry.close()
+
     def test_watchdog_assessment_preserves_completed_worker_protocol_task(self):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "registry.sqlite3"

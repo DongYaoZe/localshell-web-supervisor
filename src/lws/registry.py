@@ -743,6 +743,10 @@ class Registry:
     def load_worker_protocol(self, task_id: str) -> worker_protocol_model.WorkerTaskState:
         return worker_persistence.load_worker_protocol(self._conn, task_id)
 
+    def worker_protocol_exists(self, task_id: str) -> bool:
+        self.get_task(task_id)
+        return worker_persistence.protocol_state_exists(self._conn, task_id)
+
     def worker_protocol_events(
         self, task_id: str, *, limit: int = 200
     ) -> tuple[worker_protocol_model.ProtocolEvent, ...]:
