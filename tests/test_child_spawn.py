@@ -355,6 +355,45 @@ class ChildSpawnTests(unittest.TestCase):
         self.assertEqual(observed.url, CONVERSATION)
         self.assertIn("expected-project conversation", observed.detail)
 
+    def test_unresolved_lookup_repairs_stale_indexed_state_from_payload(self):
+        attempt = self.arm()
+        self.registry.update_child_spawn_attempt(
+            attempt.attempt_id,
+            state=ChildSpawnAttemptState.WINDOW_OPEN_SUBMITTED,
+            now=11,
+        )
+        self.registry.update_child_spawn_attempt(
+            attempt.attempt_id,
+            state=ChildSpawnAttemptState.WINDOW_BOUND,
+            window_handle=101,
+            browser_pid=202,
+            now=12,
+        )
+        self.registry.update_child_spawn_attempt(
+            attempt.attempt_id,
+            state=ChildSpawnAttemptState.PROMPT_SUBMITTED,
+            now=13,
+        )
+        self.registry.update_child_spawn_attempt(
+            attempt.attempt_id,
+            state=ChildSpawnAttemptState.COMPLETED,
+            conversation_url=CONVERSATION,
+            worker_id="worker_child",
+            now=14,
+        )
+        self.registry._conn.execute(
+            "UPDATE child_spawn_attempts SET state = 'RECONCILE_REQUIRED' WHERE attempt_id = ?",
+            (attempt.attempt_id,),
+        )
+        self.registry._conn.commit()
+
+        self.assertIsNone(self.registry.unresolved_child_spawn_attempt("child"))
+        row = self.registry._conn.execute(
+            "SELECT state FROM child_spawn_attempts WHERE attempt_id = ?",
+            (attempt.attempt_id,),
+        ).fetchone()
+        self.assertEqual(row["state"], ChildSpawnAttemptState.COMPLETED.value)
+
     def test_initial_only_gate_blocks_task_with_any_worker_history(self):
         self.registry.adopt_child_worker(
             "child", CONVERSATION, worker_id="existing", lease_seconds=60, now=5

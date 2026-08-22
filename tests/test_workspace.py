@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lws.models import LsmObservation, SupervisorState, TaskRecord, WorkspaceObservation
 from lws.recovery import recommend
@@ -10,6 +11,22 @@ from lws.workspace import WorkspaceProbe, detect_git_bin
 
 
 class WorkspaceProbeTests(unittest.TestCase):
+    @patch("lws.workspace.subprocess.run")
+    @patch("lws.workspace.os.name", "nt")
+    def test_windows_git_probe_disables_hanging_fs_cache_paths(self, run):
+        run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        probe = WorkspaceProbe(git_bin=r"C:\Program Files\Git\cmd\git.exe")
+        probe._run_git(Path(r"C:\repo"), "status", "--porcelain=v1")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:5], [
+            probe.git_bin,
+            "-c",
+            "core.fscache=false",
+            "-c",
+            "core.preloadindex=false",
+        ])
+        self.assertIn("-C", command)
+
     def test_missing_cwd(self):
         with tempfile.TemporaryDirectory() as td:
             missing = Path(td) / "gone"

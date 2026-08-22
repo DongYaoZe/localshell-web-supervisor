@@ -56,8 +56,21 @@ class WorkspaceProbe:
         if not self.git_bin:
             raise FileNotFoundError("git executable not found")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        command = [self.git_bin]
+        if os.name == "nt":
+            # Git for Windows can intermittently hang in secondary worktrees while
+            # refreshing its filesystem cache/preloaded index. These probes are
+            # read-only and short-lived, so disable both optimizations per process
+            # instead of mutating repository/global Git configuration.
+            command.extend([
+                "-c",
+                "core.fscache=false",
+                "-c",
+                "core.preloadindex=false",
+            ])
+        command.extend(["-C", str(cwd), *args])
         return subprocess.run(
-            [self.git_bin, "-C", str(cwd), *args],
+            command,
             text=True,
             encoding="utf-8",
             errors="replace",

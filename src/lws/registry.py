@@ -580,24 +580,38 @@ class Registry:
         return self.get_child_spawn_attempt(attempt_id)
 
     def unresolved_child_spawn_attempt(self, child_task_id: str) -> ChildSpawnAttempt | None:
-        states = tuple(
-            state.value
-            for state in (
-                ChildSpawnAttemptState.ARMED,
-                ChildSpawnAttemptState.WINDOW_OPEN_SUBMITTED,
-                ChildSpawnAttemptState.WINDOW_BOUND,
-                ChildSpawnAttemptState.PROMPT_SUBMITTED,
-                ChildSpawnAttemptState.RECONCILE_REQUIRED,
-            )
-        )
-        placeholders = ",".join("?" for _ in states)
-        row = self._conn.execute(
-            f"""SELECT attempt_id FROM child_spawn_attempts
-                WHERE child_task_id = ? AND state IN ({placeholders})
-                ORDER BY created_at DESC LIMIT 1""",
-            (child_task_id, *states),
-        ).fetchone()
-        return self.get_child_spawn_attempt(row["attempt_id"]) if row is not None else None
+        unresolved_states = {
+            ChildSpawnAttemptState.ARMED,
+            ChildSpawnAttemptState.WINDOW_OPEN_SUBMITTED,
+            ChildSpawnAttemptState.WINDOW_BOUND,
+            ChildSpawnAttemptState.PROMPT_SUBMITTED,
+            ChildSpawnAttemptState.RECONCILE_REQUIRED,
+        }
+        rows = self._conn.execute(
+            """SELECT attempt_id, state FROM child_spawn_attempts
+               WHERE child_task_id = ?
+               ORDER BY created_at DESC, attempt_id DESC""",
+            (child_task_id,),
+        ).fetchall()
+        repaired = False
+        for row in rows:
+            attempt = self.get_child_spawn_attempt(row["attempt_id"])
+            if row["state"] != attempt.state.value:
+                # payload_json is the durable record; state is only an indexed cache.
+                # Repair cache drift before it can resurrect a terminal spawn or hide
+                # a genuinely unresolved one after a crash/interrupted metadata update.
+                self._conn.execute(
+                    "UPDATE child_spawn_attempts SET state = ? WHERE attempt_id = ?",
+                    (attempt.state.value, attempt.attempt_id),
+                )
+                repaired = True
+            if attempt.state in unresolved_states:
+                if repaired:
+                    self._conn.commit()
+                return attempt
+        if repaired:
+            self._conn.commit()
+        return None
 
     def child_spawn_attempts(self, child_task_id: str, *, limit: int = 50) -> list[ChildSpawnAttempt]:
         rows = self._conn.execute(
