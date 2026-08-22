@@ -52,6 +52,22 @@ class UiaNormalizationTests(unittest.TestCase):
         self.assertNotIn("prompt_value", payload["raw"])
         self.assertEqual(payload["visible_error"], "Message delivery timed out")
 
+    def test_payload_detects_literal_error_in_message_stream(self):
+        result = {
+            "observed_at": 100.0,
+            "address": "chatgpt.com/c/abc",
+            "text_tail": "historical text\nError in message stream",
+            "visible_text_tail": "Error in message stream",
+            "buttons": [
+                {"text": "Send prompt", "enabled": True, "offscreen": False},
+            ],
+            "composer_present": True,
+        }
+        payload = payload_from_uia_result(result)
+        self.assertEqual(payload["visible_error"], "Error in message stream")
+        self.assertFalse(payload["generating"])
+        self.assertTrue(payload["send_button_ready"])
+
     def test_payload_detects_ready_send_control(self):
         result = {
             "observed_at": 100.0,

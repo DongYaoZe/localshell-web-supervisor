@@ -13,8 +13,10 @@ from lws.models import (
     BrowserObservation,
     ReconciliationRecord,
     RecoveryRecommendation,
+    SupervisorState,
 )
 from lws.registry import Registry
+from lws.timeout_recovery import TimeoutRecoveryPolicy, gate_timeout_dispatch_plan
 from lws.uia_actions import UiaAckObservation
 
 
@@ -201,6 +203,22 @@ class DispatchRuntimeTests(unittest.TestCase):
             )
         self.assertIsNone(self.registry.unresolved_action_attempt("t1"))
 
+    def test_atomic_arm_refuses_terminal_task_without_transport_submission(self):
+        self.registry.update_state("t1", SupervisorState.COMPLETED)
+        transport = FakeTransport()
+        with self.assertRaisesRegex(Exception, "terminal task"):
+            execute_current_worker_recovery(
+                self.registry,
+                plan=self.plan(),
+                recommendation=self.recommendation(),
+                policy=DispatchExecutionPolicy(enabled=True, confirmed_task_id="t1"),
+                transport_factory=lambda binding: transport,
+                now=150.0,
+            )
+        self.assertIsNone(transport.intent)
+        self.assertIsNone(self.registry.unresolved_action_attempt("t1"))
+        self.assertEqual(self.registry.get_task("t1").recovery_attempts, 0)
+
     def test_atomic_arm_refuses_exhausted_budget_without_action_row(self):
         self.registry._conn.execute(
             "UPDATE tasks SET recovery_attempts=max_recovery_attempts WHERE task_id='t1'"
@@ -229,6 +247,51 @@ class DispatchRuntimeTests(unittest.TestCase):
             now=150.0,
         )
         return result.attempt_id
+
+    def test_literal_error_can_complete_synthetic_recovery_lifecycle_once(self):
+        literal_error = BrowserObservation(
+            worker_id=self.worker.worker_id,
+            observed_at=149.0,
+            url=URL,
+            generating=False,
+            send_button_ready=True,
+            visible_error="Error in message stream",
+            last_dom_change_at=130.0,
+            message_signature="literal-error-signature",
+            raw={"source": "windows_uia_chrome", "composer_present": True},
+        )
+        self.registry.record_browser_observation(literal_error)
+        plan = gate_timeout_dispatch_plan(
+            self.registry,
+            self.plan(),
+            browser=literal_error,
+            policy=TimeoutRecoveryPolicy(enabled=True, cooldown_s=0),
+            now=150.0,
+        )
+        self.assertTrue(plan.would_dispatch)
+        self.assertTrue(plan.checks["explicit_recoverable_delivery_error"])
+
+        transport = FakeTransport()
+        execution = execute_current_worker_recovery(
+            self.registry,
+            plan=plan,
+            recommendation=self.recommendation(),
+            policy=DispatchExecutionPolicy(enabled=True, confirmed_task_id="t1"),
+            transport_factory=lambda binding: transport,
+            now=150.0,
+        )
+        self.assertTrue(execution.submitted)
+        self.assertEqual(execution.state, ActionAttemptState.SUBMITTED.value)
+
+        reconciled = reconcile_action_with_uia(
+            self.registry,
+            attempt_id=execution.attempt_id,
+            observer_factory=lambda chrome: FakeObserver(chrome),
+            now=155.0,
+        )
+        self.assertTrue(reconciled.acknowledged)
+        self.assertEqual(reconciled.state, ActionAttemptState.ACKNOWLEDGED.value)
+        self.assertIsNone(self.registry.unresolved_action_attempt("t1"))
 
     def test_positive_single_nonce_completion_acknowledges(self):
         attempt_id = self._submitted_attempt()

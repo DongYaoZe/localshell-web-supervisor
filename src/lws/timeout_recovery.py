@@ -12,6 +12,7 @@ from .registry import OBSERVATION_RETENTION_PER_ENTITY, Registry
 RECOVERABLE_DELIVERY_ERRORS = frozenset(
     {
         "message delivery timed out",
+        "error in message stream",
         "there was an error generating a response",
         "something went wrong",
     }

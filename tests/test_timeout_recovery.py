@@ -76,6 +76,9 @@ class TimeoutRecoveryTests(unittest.TestCase):
                 self.browser(error="There was an error generating a response")
             )
         )
+        self.assertTrue(
+            is_recoverable_delivery_error(self.browser(error="Error in message stream"))
+        )
         self.assertFalse(is_recoverable_delivery_error(self.browser(error=None)))
         self.assertFalse(is_recoverable_delivery_error(self.browser(error="network looks slow")))
 
@@ -250,6 +253,36 @@ class TimeoutRecoveryTests(unittest.TestCase):
             allowed.checks["timeout_error_not_shadowed_by_newer_generation"]
         )
         self.assertTrue(allowed.candidate_ready)
+
+    def test_literal_error_banner_is_suppressed_after_newer_generation(self):
+        active = self.browser(
+            error="Error in message stream",
+            signature="literal-error-generating",
+            generating=True,
+            observed_at=NOW - 2,
+        )
+        idle = self.browser(
+            error="Error in message stream",
+            signature="literal-error-idle",
+            generating=False,
+            observed_at=NOW - 1,
+        )
+        self.registry.record_browser_observation(active)
+        self.registry.record_browser_observation(idle)
+
+        blocked = gate_timeout_dispatch_plan(
+            self.registry,
+            self.plan(),
+            browser=idle,
+            policy=TimeoutRecoveryPolicy(enabled=True, cooldown_s=0),
+            now=NOW,
+        )
+        self.assertFalse(blocked.candidate_ready)
+        self.assertFalse(blocked.would_dispatch)
+        self.assertTrue(blocked.checks["explicit_recoverable_delivery_error"])
+        self.assertFalse(
+            blocked.checks["timeout_error_not_shadowed_by_newer_generation"]
+        )
 
     def test_stale_banner_shadow_does_not_expire_after_thirty_observations(self):
         active = self.browser(

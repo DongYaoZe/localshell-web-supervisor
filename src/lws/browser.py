@@ -10,6 +10,7 @@ from .models import BrowserObservation
 
 _ERROR_PATTERNS = (
     "message delivery timed out",
+    "error in message stream",
     "there was an error generating a response",
     "something went wrong",
 )

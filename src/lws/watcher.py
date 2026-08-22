@@ -53,6 +53,8 @@ def assess(
                 + str(str(checkpoint_head) == workspace.git_head).lower()
             )
 
+    if task.state == SupervisorState.COMPLETED:
+        return Assessment(SupervisorState.COMPLETED, "task is already durably completed", "high")
     if task.state == SupervisorState.ABANDONED:
         return Assessment(SupervisorState.ABANDONED, "task was explicitly abandoned", "high")
 

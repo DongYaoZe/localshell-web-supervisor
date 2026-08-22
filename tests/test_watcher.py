@@ -1,6 +1,7 @@
 import unittest
 
 from lws.models import (
+    Assessment,
     BrowserObservation,
     LsmObservation,
     NetworkObservation,
@@ -98,6 +99,24 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(result.state, SupervisorState.RECONCILING)
         self.assertTrue(result.requires_reconcile)
 
+    def test_completed_task_is_monotonic_despite_stale_error_and_active_lsm(self):
+        browser = BrowserObservation(
+            worker_id="w1",
+            observed_at=NOW,
+            generating=False,
+            send_button_ready=True,
+            visible_error="Error in message stream",
+            last_dom_change_at=NOW - 1000,
+        )
+        result = assess(
+            task(SupervisorState.COMPLETED),
+            browser,
+            lsm(plan_status="active", recent_event_at=NOW - 1000),
+            now=NOW,
+        )
+        self.assertEqual(result.state, SupervisorState.COMPLETED)
+        self.assertIn("durably completed", result.reason)
+
     def test_delivery_error_reconciles(self):
         browser = BrowserObservation(
             worker_id="w1",
@@ -182,6 +201,22 @@ class WatcherTests(unittest.TestCase):
     def test_completed_plan_is_completion_evidence(self):
         result = assess(task(), None, lsm(plan_status="completed"), now=NOW)
         self.assertEqual(result.state, SupervisorState.COMPLETED)
+
+    def test_recommendation_never_continues_terminal_task_from_stale_assessment(self):
+        stale = Assessment(
+            SupervisorState.RECONCILING,
+            "stale UI error",
+            "high",
+            ["browser.error=Error in message stream"],
+            requires_reconcile=True,
+        )
+        rec = recommend(
+            task(SupervisorState.COMPLETED),
+            stale,
+            lsm(plan_status="active", recent_event_at=NOW - 1000),
+        )
+        self.assertEqual(rec.action, "none")
+        self.assertFalse(rec.safe_to_dispatch)
 
     def test_recovery_stays_advisory(self):
         assessment = assess(

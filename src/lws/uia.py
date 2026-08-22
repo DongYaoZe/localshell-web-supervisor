@@ -189,6 +189,7 @@ _STOP_MARKERS = ("stop answering", "stop generating", "stop response", "停止�
 _SEND_MARKERS = ("send", "send prompt", "send message", "发送", "发送消息")
 _ERROR_MARKERS = (
     "message delivery timed out",
+    "error in message stream",
     "there was an error generating a response",
     "something went wrong",
 )

@@ -1121,11 +1121,16 @@ class Registry:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             task_row = self._conn.execute(
-                "SELECT current_worker_id, recovery_attempts, max_recovery_attempts FROM tasks WHERE task_id = ?",
+                "SELECT state, current_worker_id, recovery_attempts, max_recovery_attempts FROM tasks WHERE task_id = ?",
                 (attempt.task_id,),
             ).fetchone()
             if task_row is None:
                 raise KeyError(f"unknown task: {attempt.task_id}")
+            if task_row["state"] in {
+                SupervisorState.COMPLETED.value,
+                SupervisorState.ABANDONED.value,
+            }:
+                raise RuntimeError("terminal task cannot arm a recovery action")
             if int(task_row["recovery_attempts"]) >= int(task_row["max_recovery_attempts"]):
                 raise RuntimeError("recovery attempt budget is exhausted")
             worker_row = self._conn.execute(

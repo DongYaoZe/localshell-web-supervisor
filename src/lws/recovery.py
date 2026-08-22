@@ -33,6 +33,22 @@ def recommend(
     lsm: LsmObservation | None,
     workspace: WorkspaceObservation | None = None,
 ) -> RecoveryRecommendation:
+    if task.state == SupervisorState.COMPLETED:
+        return RecoveryRecommendation(
+            task.task_id,
+            "none",
+            False,
+            "task is durably complete",
+            evidence=assessment.evidence,
+        )
+    if task.state == SupervisorState.ABANDONED:
+        return RecoveryRecommendation(
+            task.task_id,
+            "none",
+            False,
+            "task was abandoned/cancelled",
+            evidence=assessment.evidence,
+        )
     if assessment.state == SupervisorState.COMPLETED:
         return RecoveryRecommendation(
             task.task_id,

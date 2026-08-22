@@ -51,6 +51,21 @@ class BrowserObservationTests(unittest.TestCase):
         self.assertIsNotNone(obs.message_signature)
         self.assertIsNotNone(obs.last_dom_change_at)
 
+    def test_lsm_snapshot_detects_literal_error_in_message_stream(self):
+        snapshot = {
+            "url": "https://web.example/c/x",
+            "text": "Answer\nError in message stream",
+            "text_truncated": False,
+            "interactive_elements": [
+                {"tag": "button", "role": None, "text": "Send prompt", "disabled": False}
+            ],
+            "errors": [],
+            "network": [],
+        }
+        obs = observation_from_lsm_snapshot("w1", snapshot)
+        self.assertEqual(obs.visible_error, "Error in message stream")
+        self.assertTrue(obs.send_button_ready)
+
     def test_stop_button_is_positive_generation_evidence(self):
         snapshot = {
             "url": "https://web.example/c/x",
