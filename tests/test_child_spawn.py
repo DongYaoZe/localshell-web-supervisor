@@ -300,6 +300,57 @@ class ChildSpawnTests(unittest.TestCase):
         self.assertEqual(completed.state, ChildSpawnAttemptState.COMPLETED)
         self.assertEqual(completed.conversation_url, CONVERSATION)
 
+    def test_rate_limit_modal_persists_global_cooldown_and_blocks_resend(self):
+        attempt = self.arm()
+        execute_child_spawn_open(
+            self.registry, attempt_id=attempt.attempt_id, transport=FakeSpawnTransport(), now=11
+        )
+        rate_limited = FakeSpawnTransport(
+            send_result=ChildSpawnExecution(
+                False,
+                False,
+                "Too many requests modal dismissed; retry only after cooldown",
+                rate_limited=True,
+                modal_dismissed=True,
+            )
+        )
+        cooled = execute_child_spawn_prompt(
+            self.registry,
+            attempt_id=attempt.attempt_id,
+            transport=rate_limited,
+            rate_limit_cooldown_s=120,
+            now=20,
+        )
+        self.assertEqual(cooled.state, ChildSpawnAttemptState.WINDOW_BOUND)
+        self.assertEqual(rate_limited.send_calls, 1)
+        self.assertEqual(cooled.metadata["cooldown_until"], 140)
+        self.assertTrue(cooled.metadata["rate_limit_modal_dismissed"])
+        cooldown = self.registry.get_runtime_cooldown("web_child_dispatch")
+        self.assertEqual(cooldown["until_at"], 140)
+        self.assertIn("Too many requests", cooldown["reason"])
+        self.assertTrue(cooldown["metadata"]["modal_dismissed"])
+
+        blocked_transport = FakeSpawnTransport()
+        blocked = execute_child_spawn_prompt(
+            self.registry,
+            attempt_id=attempt.attempt_id,
+            transport=blocked_transport,
+            now=21,
+        )
+        self.assertEqual(blocked.state, ChildSpawnAttemptState.WINDOW_BOUND)
+        self.assertEqual(blocked_transport.send_calls, 0)
+        self.assertIn("cooldown active", blocked.last_error)
+
+    def test_child_spawn_uia_script_recognizes_rate_limit_and_got_it_before_composer(self):
+        from lws.uia_actions import _POWERSHELL_ACTION
+
+        self.assertIn("Too many requests", _POWERSHELL_ACTION)
+        self.assertIn("Got it", _POWERSHELL_ACTION)
+        self.assertLess(
+            _POWERSHELL_ACTION.index("Too many requests"),
+            _POWERSHELL_ACTION.index("prompt-textarea"),
+        )
+
     def test_different_project_conversation_never_becomes_child_worker(self):
         attempt = self.arm()
         transport = FakeSpawnTransport(

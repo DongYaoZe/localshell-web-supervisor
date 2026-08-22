@@ -130,6 +130,30 @@ class ChildDispatchTests(unittest.TestCase):
         self.assertEqual(recovered.revision, 2)
         self.assertEqual(recovered.current_worker_id, "worker-a")
 
+    def test_child_task_can_supervise_grandchild_while_preserving_root_lineage(self):
+        self.create()
+        nested = self.registry.create_child_dispatch(
+            "child-a",
+            child_key="nested-test",
+            child_task_id="grandchild",
+            project="lws",
+            objective="nested child verification",
+            cwd="D:/repo-wt-grandchild",
+            prompt_text="verify nested child supervisor",
+            expected_branch="agent/grandchild",
+            base_ref="abc123",
+            now=20.0,
+        )
+        self.assertEqual(nested.parent_task_id, "child-a")
+        state = self.registry.load_worker_protocol("grandchild")
+        self.assertEqual(state.lineage.parent_task_id, "child-a")
+        self.assertEqual(state.lineage.root_task_id, "parent")
+        self.assertEqual(state.lineage.child_key, "nested-test")
+        self.assertEqual(
+            [d.child_task_id for d in self.registry.child_dispatches_for_parent("child-a")],
+            ["grandchild"],
+        )
+
     def test_child_lsm_session_binds_once_and_replacement_must_reuse_it(self):
         self.create()
         task = self.registry.bind_child_lsm_session("child-a", "s-child-a")

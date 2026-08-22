@@ -180,6 +180,22 @@ class ChromeUiaActionTransportTests(unittest.TestCase):
 
     @patch("lws.uia_actions.os.name", "nt")
     @patch("lws.uia_actions._run_powershell_json")
+    def test_non_ascii_prompt_round_trips_through_utf8_base64_transport(self, run_helper):
+        prompt = "?????D:\\??\\?????????????"
+        run_helper.return_value = {
+            "submitted": True,
+            "side_effect_possible": True,
+            "phase": "invoke_returned",
+            "detail": "ok",
+        }
+        result = self.transport().submit(action_intent(prompt=prompt))
+        self.assertTrue(result.submitted)
+        encoded = run_helper.call_args.kwargs["env"]["LWS_PROMPT_B64"]
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), prompt)
+        self.assertNotIn(prompt, run_helper.call_args.args[0])
+
+    @patch("lws.uia_actions.os.name", "nt")
+    @patch("lws.uia_actions._run_powershell_json")
     def test_post_draft_failure_is_ambiguous_not_retryable(self, run_helper):
         run_helper.return_value = {
             "submitted": False,
