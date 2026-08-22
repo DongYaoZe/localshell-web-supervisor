@@ -12,6 +12,8 @@ python -m lws --version
 python -m lws doctor
 ```
 
+The implicit registry is checkout-independent. On Windows it defaults to `%LOCALAPPDATA%\LocalShellWebSupervisor\registry.sqlite3`; on POSIX it uses `$XDG_STATE_HOME/localshell-web-supervisor/registry.sqlite3` or `~/.local/state/localshell-web-supervisor/registry.sqlite3`. `LWS_STATE_HOME` relocates only the implicit state root; `--db` and `LWS_DB` remain exact registry overrides. A legacy repo-local `.lws\registry.sqlite3` is migrated with SQLite backup only when it has no fresh watchdog lease. If lease inspection is ambiguous or the migration cannot complete cleanly, LWS keeps using the legacy registry for that invocation instead of creating two control planes.
+
 For one registered task whose current Chrome tab is explicitly authorized for supervision:
 
 ```powershell
@@ -95,14 +97,15 @@ Independent detached host:
 ```powershell
 python -m lws watchdog-start --uia --interval 30
 python -m lws watchdog-status
+python -m lws watchdog-restart --uia --interval 30
 python -m lws watchdog-stop
 ```
 
-The resident watchdog owns a renewable SQLite singleton lease. `watchdog-start` launches the same watcher as an independent Python process and waits until a random launch-owner token is visible in the lease before reporting success. It does not install a Windows service or scheduled task.
+The resident watchdog owns a renewable SQLite singleton lease. `watchdog-start` launches the same watcher as an independent Python process and waits until a random launch-owner token is visible in the lease before reporting success. On Windows it uses `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`, redirects stdin/stdout/stderr away from the launching shell, and therefore does not depend on that shell remaining alive. The default log is stored beside the registry in durable state, not in the source checkout. It does not install a Windows service or scheduled task.
 
 On this Windows environment the launcher/wrapper PID can differ from the resident Python PID, so LWS reports both the spawn PID and the lease PID. Lease ownership, not wrapper PID equality, is the startup proof.
 
-`watchdog-stop` does **not** send a process-tree kill. It atomically changes the singleton owner to a short-lived `stop:` fence. The old watcher fails its next heartbeat and exits through its existing duplicate-control safety path; the fresh stop lease blocks a replacement during shutdown. After the resident PID disappears, the stop lease is cleared.
+`watchdog-stop` does **not** send a process-tree kill. It atomically changes the singleton owner to a short-lived `stop:` fence. The old watcher fails its next heartbeat and exits through its existing duplicate-control safety path; the fresh stop lease blocks a replacement during shutdown. After the resident PID disappears, the exact stop lease is cleared. `watchdog-restart` reuses this same sequence and refuses to launch a replacement until shutdown is proven. `watchdog-status --json` exposes `lease_state` as `missing`, `live`, `fresh_dead`, `stop_fenced`, `stale_alive`, or `stale_dead`, so a dead PID is not conflated with a merely expired lease.
 
 ### Hosting warning on the inspected Windows/LSM environment
 
@@ -186,7 +189,7 @@ LWS registry schema v9 is additive. Schema v6 preserves all v5 task/worker, obse
 
 ## 9. Data handling
 
-The local `.lws/` directory is ignored by Git and may contain the registry, observations, reconciliation/action history, watchdog logs, and smoke fixtures. Do not publish it as source code.
+Legacy or task-local `.lws/` directories remain ignored by Git and may contain migration sources, smoke fixtures, prompts, or other local evidence. The implicit registry and watchdog log now live outside the checkout in per-user durable state. Neither location is source material; do not publish runtime databases, WAL/SHM files, logs, observations, reconciliation/action history, or other runtime state.
 
 LWS intentionally minimizes persisted browser data:
 

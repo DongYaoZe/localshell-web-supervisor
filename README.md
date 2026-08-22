@@ -68,7 +68,7 @@ $env:PYTHONPATH = "src"
 python -m lws --help
 ```
 
-The local registry defaults to `.lws/registry.sqlite3` and is ignored by Git. Override it with `--db` or `LWS_DB`.
+The implicit registry now lives in per-user durable state outside the source checkout, so deleting/recloning the repository does not discard supervisor history. On Windows the default is `%LOCALAPPDATA%\LocalShellWebSupervisor\registry.sqlite3`; on POSIX it is under `$XDG_STATE_HOME/localshell-web-supervisor` or `~/.local/state/localshell-web-supervisor`. `LWS_STATE_HOME` relocates this implicit state root. `--db` and `LWS_DB` remain exact overrides. If an older checkout still has `.lws/registry.sqlite3`, LWS migrates it with a consistent SQLite backup only when no fresh watchdog lease fences that legacy database; otherwise that invocation keeps using the legacy path to avoid split-brain. Runtime databases remain ignored by Git and are never published as source.
 
 ## Basic task registration
 
@@ -187,10 +187,11 @@ The default watchdog is advisory. The optional timeout-recovery mode is intentio
 ```powershell
 lws watchdog-start --auto-recover-timeouts
 lws watchdog-status
+lws watchdog-restart --auto-recover-timeouts
 lws watchdog-stop
 ```
 
-It only acts after the same worker passes exact-window, Local Shell, workspace, semantic-fence, action-lock, cooldown, and recovery-budget checks.
+It only acts after the same worker passes exact-window, Local Shell, workspace, semantic-fence, action-lock, cooldown, and recovery-budget checks. Detached Windows startup uses `DETACHED_PROCESS`, `CREATE_NEW_PROCESS_GROUP`, and `CREATE_NO_WINDOW`, redirects standard handles, and writes its default log beside the registry rather than inside the checkout. Restart is cooperative and fail-closed: replacement launch occurs only after the prior resident PID is gone and its exact stop fence can be cleared.
 
 ## Architecture
 

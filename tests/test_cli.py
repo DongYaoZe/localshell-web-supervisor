@@ -11,9 +11,69 @@ from lws.cli import _assessment, _read_json_file, main
 from lws.models import SupervisorState
 from lws.registry import Registry
 from lws.ram import MemoryProbeUnavailable
+from lws.watchdog_host import WatchdogLaunchResult, WatchdogStopResult
 
 
 class CliInputTests(unittest.TestCase):
+    def test_watchdog_restart_never_launches_until_old_host_is_proven_stopped(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "registry.sqlite3"
+            stop = WatchdogStopResult(
+                requested=True,
+                pid=123,
+                stopped=False,
+                stop_lease_cleared=False,
+                detail="still stopping",
+            )
+            out = io.StringIO()
+            with (
+                patch("lws.cli.stop_watchdog_host", return_value=stop),
+                patch("lws.cli.launch_detached_watchdog") as launch,
+                redirect_stdout(out),
+            ):
+                code = main([
+                    "--db", str(db), "watchdog-restart", "--wait", "0", "--json"
+                ])
+            self.assertEqual(code, 11)
+            launch.assert_not_called()
+            payload = json.loads(out.getvalue())
+            self.assertFalse(payload["stop"]["stopped"])
+            self.assertIsNone(payload["launch"])
+
+    def test_watchdog_restart_launches_only_after_successful_stop(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "registry.sqlite3"
+            stop = WatchdogStopResult(
+                requested=True,
+                pid=123,
+                stopped=True,
+                stop_lease_cleared=True,
+                detail="watchdog exited cooperatively",
+            )
+            launched = WatchdogLaunchResult(
+                spawn_pid=456,
+                lease_pid=456,
+                lease_owner="host:fixture",
+                command=["python", "-m", "lws"],
+                log_path=str(Path(td) / "watchdog.log"),
+                lease_ready=True,
+                detail="ready",
+            )
+            out = io.StringIO()
+            with (
+                patch("lws.cli.stop_watchdog_host", return_value=stop),
+                patch("lws.cli.launch_detached_watchdog", return_value=launched) as launch,
+                redirect_stdout(out),
+            ):
+                code = main([
+                    "--db", str(db), "watchdog-restart", "--wait", "0", "--json"
+                ])
+            self.assertEqual(code, 0)
+            launch.assert_called_once()
+            payload = json.loads(out.getvalue())
+            self.assertTrue(payload["stop"]["stopped"])
+            self.assertTrue(payload["launch"]["lease_ready"])
+
     def test_watchdog_assessment_accepts_new_task_before_protocol_bootstrap(self):
         with tempfile.TemporaryDirectory() as td:
             db = Path(td) / "registry.sqlite3"

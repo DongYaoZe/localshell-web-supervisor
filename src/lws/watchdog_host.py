@@ -24,6 +24,7 @@ class WatchdogHostStatus:
     expires_at: float | None
     fresh: bool
     detail: str
+    lease_state: str
 
 
 @dataclass(slots=True)
@@ -34,6 +35,15 @@ class WatchdogLaunchResult:
     command: list[str]
     log_path: str
     lease_ready: bool
+    detail: str
+
+
+@dataclass(slots=True)
+class WatchdogStopResult:
+    requested: bool
+    pid: int | None
+    stopped: bool
+    stop_lease_cleared: bool
     detail: str
 
 
@@ -90,6 +100,7 @@ def inspect_watchdog_host(
             expires_at=None,
             fresh=False,
             detail="no watchdog lease",
+            lease_state="missing",
         )
     pid = int(lease.get("pid") or 0)
     owner = str(lease.get("owner_id") or "")
@@ -99,12 +110,19 @@ def inspect_watchdog_host(
     stop_requested = owner.startswith("stop:") and fresh
     if stop_requested:
         detail = "cooperative stop requested; replacement watchdog remains fenced"
+        lease_state = "stop_fenced"
     elif fresh and alive:
         detail = "watchdog lease and PID are live"
+        lease_state = "live"
     elif fresh and not alive:
         detail = "lease is fresh but PID is absent; wait for lease expiry before replacement"
+        lease_state = "fresh_dead"
+    elif alive:
+        detail = "watchdog lease is stale but recorded PID still exists; replacement will fence the old owner"
+        lease_state = "stale_alive"
     else:
-        detail = "watchdog lease is stale"
+        detail = "watchdog lease is stale and recorded PID is absent"
+        lease_state = "stale_dead"
     return WatchdogHostStatus(
         name=name,
         lease_present=True,
@@ -116,6 +134,7 @@ def inspect_watchdog_host(
         expires_at=expires_at,
         fresh=fresh,
         detail=detail,
+        lease_state=lease_state,
     )
 
 
@@ -164,7 +183,7 @@ def launch_detached_watchdog(
 
     repo_root = Path(repo_root).resolve()
     db_path = Path(db_path).resolve()
-    log_path = Path(log_path or (repo_root / ".lws" / "watchdog.log")).resolve()
+    log_path = Path(log_path or (db_path.parent / "watchdog.log")).resolve()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     lease_owner = f"host:{uuid.uuid4().hex}"
     command = build_watchdog_command(
@@ -235,3 +254,45 @@ def request_cooperative_stop(
     grace_s: float = 90.0,
 ) -> dict | None:
     return registry.request_watchdog_stop(name=name, grace_s=grace_s)
+
+
+def stop_watchdog_host(
+    registry: Registry,
+    *,
+    name: str = "default",
+    grace_s: float = 90.0,
+    wait_s: float = 35.0,
+    poll_s: float = 0.1,
+) -> WatchdogStopResult:
+    """Cooperatively stop one resident watchdog and clear only its exact stop fence."""
+
+    requested = request_cooperative_stop(registry, name=name, grace_s=grace_s)
+    if requested is None:
+        return WatchdogStopResult(
+            requested=False,
+            pid=None,
+            stopped=True,
+            stop_lease_cleared=False,
+            detail="no watchdog lease",
+        )
+
+    pid = int(requested.get("pid") or 0)
+    stop_owner = str(requested.get("owner_id") or "")
+    deadline = time.time() + max(0.0, float(wait_s))
+    while pid and pid_exists(pid) and time.time() < deadline:
+        time.sleep(max(0.01, float(poll_s)))
+    stopped = not pid or not pid_exists(pid)
+    cleared = False
+    if stopped and stop_owner.startswith("stop:"):
+        cleared = registry.clear_watchdog_stop(name=name, stop_owner_id=stop_owner)
+    return WatchdogStopResult(
+        requested=True,
+        pid=pid or None,
+        stopped=stopped,
+        stop_lease_cleared=cleared,
+        detail=(
+            "watchdog exited cooperatively"
+            if stopped
+            else "watchdog has not exited yet; stop lease remains fresh and blocks replacement"
+        ),
+    )

@@ -59,6 +59,7 @@ from .replacement import (
 )
 from .recovery import recommend
 from .registry import Registry
+from .runtime_state import resolve_default_registry_path
 from .scheduler import attention_queue
 from .timeout_recovery import (
     TimeoutRecoveryPolicy,
@@ -70,18 +71,14 @@ from .uia_actions import ChromeUiaAckObserver, ChromeUiaActionTransport, UiaActi
 from .watchdog_host import (
     inspect_watchdog_host,
     launch_detached_watchdog,
-    pid_exists,
-    request_cooperative_stop,
+    stop_watchdog_host,
 )
 from .watcher import WatchPolicy, assess
 from .workspace import WorkspaceProbe
 
 
 def default_db_path() -> Path:
-    value = os.getenv("LWS_DB")
-    if value:
-        return Path(value)
-    return Path.cwd() / ".lws" / "registry.sqlite3"
+    return resolve_default_registry_path()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,7 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="LocalShell Web Supervisor: durable browser-worker orchestration",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    p.add_argument("--db", default=None, help="registry sqlite path (default: .lws/registry.sqlite3)")
+    p.add_argument(
+        "--db",
+        default=None,
+        help="registry sqlite path (default: per-user durable state; LWS_DB also overrides)",
+    )
     p.add_argument("--lsm-state-dir", default=None, help="Local Shell MCP durable state directory")
     p.add_argument("--git-bin", default=None, help="git executable used for read-only workspace reconciliation")
     sub = p.add_subparsers(dest="command", required=True)
@@ -355,6 +356,23 @@ def build_parser() -> argparse.ArgumentParser:
     watchdog_stop.add_argument("--grace", type=float, default=90.0)
     watchdog_stop.add_argument("--wait", type=float, default=35.0)
     watchdog_stop.add_argument("--json", action="store_true")
+
+    watchdog_restart = sub.add_parser(
+        "watchdog-restart",
+        help="cooperatively stop the resident watchdog, prove shutdown, then launch a replacement",
+    )
+    watchdog_restart.add_argument("--interval", type=float, default=30.0)
+    watchdog_restart.add_argument("--uia", action="store_true")
+    watchdog_restart.add_argument(
+        "--auto-recover-timeouts",
+        action="store_true",
+        help="explicitly enable fenced resident recovery for delivery-timeout errors",
+    )
+    watchdog_restart.add_argument("--log")
+    watchdog_restart.add_argument("--ready-timeout", type=float, default=8.0)
+    watchdog_restart.add_argument("--grace", type=float, default=90.0)
+    watchdog_restart.add_argument("--wait", type=float, default=35.0)
+    watchdog_restart.add_argument("--json", action="store_true")
 
     worker = sub.add_parser("add-worker", help="attach a new conversation worker lease")
     worker.add_argument("task_id")
@@ -1724,45 +1742,53 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if launch.lease_ready else 10
 
         if args.command == "watchdog-stop":
-            requested = request_cooperative_stop(
+            stopped = stop_watchdog_host(
                 registry,
                 grace_s=max(5.0, float(args.grace)),
+                wait_s=max(0.0, float(args.wait)),
             )
-            if requested is None:
-                payload = {"requested": False, "stopped": True, "detail": "no watchdog lease"}
+            if args.json:
+                _print_json(asdict(stopped))
+            else:
+                print(stopped.detail)
+            return 0 if stopped.stopped else 11
+
+        if args.command == "watchdog-restart":
+            stopped = stop_watchdog_host(
+                registry,
+                grace_s=max(5.0, float(args.grace)),
+                wait_s=max(0.0, float(args.wait)),
+            )
+            if not stopped.stopped:
+                payload = {"stop": asdict(stopped), "launch": None}
                 if args.json:
                     _print_json(payload)
                 else:
-                    print("no watchdog lease")
-                return 0
-            pid = int(requested.get("pid") or 0)
-            stop_owner = str(requested.get("owner_id") or "")
-            deadline = time.time() + max(0.0, float(args.wait))
-            while pid and pid_exists(pid) and time.time() < deadline:
-                time.sleep(0.1)
-            stopped = not pid or not pid_exists(pid)
-            cleared = False
-            if stopped and stop_owner.startswith("stop:"):
-                cleared = registry.clear_watchdog_stop(
-                    name="default",
-                    stop_owner_id=stop_owner,
-                )
-            payload = {
-                "requested": True,
-                "pid": pid or None,
-                "stopped": stopped,
-                "stop_lease_cleared": cleared,
-                "detail": (
-                    "watchdog exited cooperatively"
-                    if stopped
-                    else "watchdog has not exited yet; stop lease remains fresh and blocks replacement"
-                ),
-            }
+                    print(stopped.detail)
+                return 11
+            launch = launch_detached_watchdog(
+                registry,
+                repo_root=Path.cwd(),
+                db_path=registry.db_path,
+                interval_s=max(1.0, float(args.interval)),
+                use_uia=args.uia,
+                auto_recover_timeouts=args.auto_recover_timeouts,
+                lsm_state_dir=args.lsm_state_dir,
+                git_bin=args.git_bin,
+                log_path=args.log,
+                ready_timeout_s=max(1.0, float(args.ready_timeout)),
+            )
+            payload = {"stop": asdict(stopped), "launch": asdict(launch)}
             if args.json:
                 _print_json(payload)
             else:
-                print(payload["detail"])
-            return 0 if stopped else 11
+                print(stopped.detail)
+                print(
+                    f"watchdog spawn_pid={launch.spawn_pid} lease_pid={launch.lease_pid} "
+                    f"lease_ready={str(launch.lease_ready).lower()} log={launch.log_path}"
+                )
+                print(launch.detail)
+            return 0 if launch.lease_ready else 10
 
         if args.command == "doctor":
             report = run_doctor(

@@ -202,19 +202,11 @@ resident watchdog refuses to start while the lease is fresh; if a running watchd
 ownership it exits rather than risk duplicate future control-plane actions. One-shot scans
 do not acquire the resident lease.
 
-The 0.4 host layer can launch this same watcher as an independent detached Python process.
-A random `host:<uuid>` lease-owner token, rather than launcher PID equality, proves startup;
-this matters on Windows where a virtual-environment Python wrapper PID can differ from the
-resident Python PID. `watchdog-status` reports the lease PID and liveness.
+The host layer can launch this same watcher as an independent detached Python process. A random `host:<uuid>` lease-owner token, rather than launcher PID equality, proves startup; this matters on Windows where a virtual-environment Python wrapper PID can differ from the resident Python PID. Windows launch uses detached/new-process-group/no-window flags plus redirected standard handles, so the resident does not depend on its launching shell. `watchdog-status` reports the lease PID, liveness, and a machine-readable lease state that distinguishes live, fresh-dead, stop-fenced, stale-alive, stale-dead, and missing cases.
 
-Stop is cooperative rather than process-tree killing. `watchdog-stop` atomically replaces
-the owner with a fresh `stop:<uuid>` lease. The old watcher then fails its next heartbeat
-and exits by its existing safety path, while the fresh stop lease prevents a replacement
-from racing shutdown. Once the resident PID disappears, the stop lease is cleared.
+Stop is cooperative rather than process-tree killing. `watchdog-stop` atomically replaces the owner with a fresh `stop:<uuid>` lease. The old watcher then fails its next heartbeat and exits by its existing safety path, while the fresh stop lease prevents a replacement from racing shutdown. Once the resident PID disappears, the exact stop lease is cleared. Restart composes the same stop proof with a new detached launch and will not launch while the old resident is still alive.
 
-Production hosting is therefore independent of a web chat conversation and does not rely
-on an LSM tracked shell job owning the full Windows descendant process tree. See
-`LSM_FINDINGS.md` for the bootstrap experiment and `OPERATIONS.md` for host commands.
+Production hosting is therefore independent of a web chat conversation and does not rely on an LSM tracked shell job owning the full Windows descendant process tree. Registry lifetime is also independent of a particular source checkout: the implicit database lives in per-user durable state, while `--db`/`LWS_DB` remain exact overrides. A legacy repo-local registry is copied with a consistent SQLite backup only when no fresh legacy watchdog lease exists; otherwise migration is deferred so one running control plane cannot silently split into two. See `LSM_FINDINGS.md` for the bootstrap experiment and `OPERATIONS.md` for host commands.
 
 ## Version boundaries
 
