@@ -162,6 +162,31 @@ class DispatchRuntimeTests(unittest.TestCase):
         self.assertIn(f"LWS-ACTION-{attempt.nonce}", transport.intent.prompt)
         self.assertNotIn(PROMPT, str(attempt.metadata))
 
+    def test_nonbudgeted_current_worker_action_preserves_recovery_budget_and_metadata(self):
+        self.registry._conn.execute(
+            "UPDATE tasks SET recovery_attempts=max_recovery_attempts WHERE task_id='t1'"
+        )
+        self.registry._conn.commit()
+        transport = FakeTransport()
+        result = execute_current_worker_recovery(
+            self.registry,
+            plan=self.plan(),
+            recommendation=self.recommendation(),
+            policy=DispatchExecutionPolicy(
+                enabled=True,
+                confirmed_task_id="t1",
+                consume_recovery_budget=False,
+                attempt_metadata={"trigger_kind": "hard_overrun_25m20"},
+            ),
+            transport_factory=lambda binding: transport,
+            now=150.0,
+        )
+        self.assertTrue(result.submitted)
+        task = self.registry.get_task("t1")
+        self.assertEqual(task.recovery_attempts, task.max_recovery_attempts)
+        attempt = self.registry.get_action_attempt(result.attempt_id)
+        self.assertEqual(attempt.metadata["trigger_kind"], "hard_overrun_25m20")
+
     def test_disabled_or_wrong_confirmation_never_arms(self):
         for policy in (
             DispatchExecutionPolicy(enabled=False, confirmed_task_id="t1"),

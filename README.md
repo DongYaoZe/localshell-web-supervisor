@@ -23,7 +23,7 @@ LWS provides a fail-closed control plane around browser-based agent work:
 - parent/child task scheduling with persisted prompts and worktree metadata;
 - explicitly gated initial child-conversation creation in a confirmed web project;
 - guarded replacement-worker takeover coordinated with supported Local Shell MCP session takeover;
-- low-noise resident watchdog support for narrowly recognized delivery failures;
+- low-noise resident watchdog support for narrowly recognized delivery failures and an opt-in 25m20 hard-overrun continuation rule;
 - browser-memory and active/park/probe planning.
 
 LWS is deliberately conservative. Unknown external outcomes are reconciled, not replayed.
@@ -182,16 +182,18 @@ The Local Shell takeover call is made exactly once after write-ahead authorizati
 
 ## Resident watchdog
 
-The default watchdog is advisory. The optional timeout-recovery mode is intentionally narrow:
+The default watchdog is advisory. Two browser-mutation modes are opt-in:
 
 ```powershell
-lws watchdog-start --auto-recover-timeouts
+lws watchdog-start --auto-recover-timeouts --auto-continue-overruns --overrun-after 1520
 lws watchdog-status
-lws watchdog-restart --auto-recover-timeouts
+lws watchdog-restart --auto-recover-timeouts --auto-continue-overruns --overrun-after 1520
 lws watchdog-stop
 ```
 
-It only acts after the same worker passes exact-window, Local Shell, workspace, semantic-fence, action-lock, cooldown, and recovery-budget checks. Detached Windows startup uses `DETACHED_PROCESS`, `CREATE_NEW_PROCESS_GROUP`, and `CREATE_NO_WINDOW`, redirects standard handles, and writes its default log beside the registry rather than inside the checkout. Restart is cooperative and fail-closed: replacement launch occurs only after the prior resident PID is gone and its exact stop fence can be cleared.
+`--auto-recover-timeouts` remains limited to recognized delivery errors and retains the exact-window, Local Shell, workspace, semantic-fence, action-lock, cooldown, and recovery-budget checks. `--auto-continue-overruns` treats 1520 seconds (25m20s) as a hard work-turn wall clock: an unfinished current worker is sampled before the deadline and may receive one fenced `continue` after the deadline once generation has returned to a usable composer and two stable exact-worker reconciliation samples agree. A submitted or ambiguous continuation durably resets the per-turn clock and cannot be replayed after a watchdog restart; a new observed manual generation also resets the clock. These periodic wall-clock nudges do not consume the bounded fault-recovery budget. A proven pre-send failure, including a rate-limit modal, enters cooldown instead of being retried every scan.
+
+Detached Windows startup uses `DETACHED_PROCESS`, `CREATE_NEW_PROCESS_GROUP`, and `CREATE_NO_WINDOW`, redirects standard handles, and writes its default log beside the registry rather than inside the checkout. Restart is cooperative and fail-closed: replacement launch occurs only after the prior resident PID is gone and its exact stop fence can be cleared.
 
 ## Architecture
 

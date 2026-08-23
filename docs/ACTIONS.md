@@ -1,6 +1,6 @@
 # Action adapter and crash fencing
 
-LWS keeps the exact-window Windows UI Automation transport gated by default. It is wired to the explicit one-shot `dispatch-execute` command and, in LWS 0.9, to one separately opted-in resident path for recognized delivery-timeout recovery. The default watchdog remains advisory.
+LWS keeps the exact-window Windows UI Automation transport gated by default. It is wired to the explicit one-shot `dispatch-execute` command and to two separately opted-in resident paths: recognized delivery-timeout recovery and hard wall-clock overrun continuation. The default watchdog remains advisory.
 
 The design goal remains unchanged: a supervisor crash must never turn an uncertain previous send into an automatic duplicate send.
 
@@ -41,7 +41,7 @@ This is a database invariant, not only a Python check.
 
 ## Exact-window UIA transport
 
-`ChromeUiaActionTransport` remains disabled by default. There is still no generic `lws send` or `lws continue` command. `dispatch-execute` enables the adapter for one explicitly confirmed invocation. LWS 0.9 may also enable the same adapter from `watch --auto-recover-timeouts` / `watchdog-start --auto-recover-timeouts`, but only after a recognized delivery error and the same deterministic recovery fences pass.
+`ChromeUiaActionTransport` remains disabled by default. There is still no generic `lws send` or `lws continue` command. `dispatch-execute` enables the adapter for one explicitly confirmed invocation. Resident `--auto-recover-timeouts` may use the adapter only after a recognized delivery error and its deterministic recovery fences pass. Resident `--auto-continue-overruns` may use it only after the hard work-turn deadline and its separate two-sample/current-worker/exact-window/composer fences pass.
 
 The preferred construction path is a fresh `WorkerWindowBinding` recorded by exact-URL UIA observation. Current registry migrations retain the schema-v3 short-lived lease containing:
 
@@ -140,4 +140,4 @@ The policy layer exposes only a one-shot current-worker continuation. `dispatch-
 - canonical recovery prompt;
 - the gated transport.
 
-The ARMED row and recovery-budget increment are committed atomically before submission. Positive post-action acknowledgement remains a separate observation step. The default resident watchdog does not invoke the executor. With explicit `--auto-recover-timeouts`, the watchdog may invoke it only for a recognized delivery error, after two stable reconciliation samples, cooldown, exact-window/LSM/workspace/action gates, and with at most one possible external send per cycle.
+For ordinary fault recovery, the ARMED row and recovery-budget increment are committed atomically before submission. Positive post-action acknowledgement remains a separate observation step. Hard-overrun continuation uses the same ARMED/unresolved/ACK state machine and an atomic current-worker writer, but intentionally does not consume the bounded fault-recovery budget; its periodic 25m20 nudges are a separate maintenance mechanism. The default resident watchdog does not invoke either path. When explicitly enabled, the two resident paths share a one-possible-external-send-per-cycle ceiling, and an unresolved action from either path blocks the other until reconciled.

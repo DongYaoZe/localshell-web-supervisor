@@ -55,6 +55,21 @@ class WatchdogHostTests(unittest.TestCase):
         self.assertIn("--uia", command)
         self.assertIn("--auto-recover-timeouts", command)
 
+    def test_overrun_autocontinue_command_is_explicit_and_forces_uia(self):
+        command = build_watchdog_command(
+            python_executable="python",
+            db_path="C:/repo/.lws/registry.sqlite3",
+            interval_s=30,
+            use_uia=False,
+            auto_continue_overruns=True,
+            overrun_after_s=1520,
+        )
+        self.assertIn("--uia", command)
+        self.assertIn("--auto-continue-overruns", command)
+        self.assertIn("--overrun-after", command)
+        index = command.index("--overrun-after")
+        self.assertEqual(command[index + 1], "1520.0")
+
     def test_windows_watchdog_creationflags_include_no_console_window(self):
         flags = watchdog_creationflags("nt")
         self.assertTrue(flags & 0x00000008)  # DETACHED_PROCESS

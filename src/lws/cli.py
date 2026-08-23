@@ -41,7 +41,15 @@ from .child_spawn import (
 from .lifecycle import PageCloseEvidence, evaluate_page_close_evidence
 from .lsm import FileLsmTelemetry, UnsupportedLsmState, detect_lsm_state_dir
 from .orchestrator import BrowserPoolPolicy, plan_browser_pool
-from .models import Assessment, PageCapabilityKind, SupervisorState, WorkerStatus
+from .models import Assessment, PageCapabilityKind, RecoveryRecommendation, SupervisorState, WorkerStatus
+from .overrun_continuation import (
+    DEFAULT_OVERRUN_AFTER_S,
+    OVERRUN_CONTINUE_PROMPT,
+    OVERRUN_TRIGGER_KIND,
+    OverrunContinuationPolicy,
+    build_overrun_dispatch_plan,
+    overrun_clock,
+)
 from .probe_operator import (
     classify_probe_operation,
     load_probe_reconciliation_evidence,
@@ -327,6 +335,17 @@ def build_parser() -> argparse.ArgumentParser:
             "all two-sample/LSM/workspace/exact-window/action fences still apply"
         ),
     )
+    watch.add_argument(
+        "--auto-continue-overruns",
+        action="store_true",
+        help="send a fenced continue when a managed work turn exceeds the hard wall-clock limit",
+    )
+    watch.add_argument(
+        "--overrun-after",
+        type=float,
+        default=float(DEFAULT_OVERRUN_AFTER_S),
+        help="seconds before hard-overrun auto-continue (default: 1520 = 25m20s)",
+    )
 
     watchdog_status = sub.add_parser(
         "watchdog-status",
@@ -344,6 +363,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-recover-timeouts",
         action="store_true",
         help="explicitly enable fenced resident recovery for delivery-timeout errors",
+    )
+    watchdog_start.add_argument("--auto-continue-overruns", action="store_true")
+    watchdog_start.add_argument(
+        "--overrun-after", type=float, default=float(DEFAULT_OVERRUN_AFTER_S)
     )
     watchdog_start.add_argument("--log")
     watchdog_start.add_argument("--ready-timeout", type=float, default=8.0)
@@ -367,6 +390,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-recover-timeouts",
         action="store_true",
         help="explicitly enable fenced resident recovery for delivery-timeout errors",
+    )
+    watchdog_restart.add_argument("--auto-continue-overruns", action="store_true")
+    watchdog_restart.add_argument(
+        "--overrun-after", type=float, default=float(DEFAULT_OVERRUN_AFTER_S)
     )
     watchdog_restart.add_argument("--log")
     watchdog_restart.add_argument("--ready-timeout", type=float, default=8.0)
@@ -1032,6 +1059,241 @@ def _auto_recover_timeout_cycle(
                 "state": execution.state,
                 "submitted": execution.submitted,
                 "side_effect_possible": execution.side_effect_possible,
+                "detail": execution.detail,
+            }
+        )
+        if execution.submitted or execution.side_effect_possible:
+            break
+
+    return results
+
+
+def _auto_continue_overrun_cycle(
+    registry: Registry,
+    adapter,
+    workspace_probe: WorkspaceProbe,
+    *,
+    policy: OverrunContinuationPolicy,
+    now: float | None = None,
+) -> list[dict]:
+    """Run one bounded hard-overrun continuation cycle across all managed tasks.
+
+    Unlike delivery-error recovery, eligibility is wall-clock based and therefore scans all
+    managed tasks, not only the attention queue. At most one browser side effect is attempted
+    per cycle. Ambiguous/previously-submitted overrun actions are reconciled before any new send.
+    """
+
+    if not policy.enabled:
+        return []
+    ts = time.time() if now is None else float(now)
+    results: list[dict] = []
+    uia_probe = ChromeUiaProbe()
+    tasks = list(registry.list_tasks())
+
+    for task in tasks:
+        attempt = registry.unresolved_action_attempt(task.task_id)
+        if attempt is None or attempt.metadata.get("trigger_kind") != OVERRUN_TRIGGER_KIND:
+            continue
+        try:
+            _refresh_uia(registry, task.task_id, uia_probe)
+            ack_now = time.time() if now is None else ts
+            reconciled = reconcile_action_with_uia(
+                registry,
+                attempt_id=attempt.attempt_id,
+                observer_factory=lambda chrome: ChromeUiaAckObserver(
+                    chrome_executable=chrome
+                ),
+                now=ack_now,
+            )
+            if reconciled.acknowledged:
+                current_task = registry.get_task(task.task_id)
+                browser_after_ack = registry.latest_browser_observation(
+                    current_task.current_worker_id
+                )
+                if browser_after_ack is not None and browser_after_ack.message_signature:
+                    registry.record_action_ack_browser_signature(
+                        attempt.attempt_id,
+                        message_signature=browser_after_ack.message_signature,
+                    )
+            detail = reconciled.detail
+            results.append(
+                {
+                    "task_id": task.task_id,
+                    "kind": "overrun_ack",
+                    "attempt_id": attempt.attempt_id,
+                    "state": reconciled.state,
+                    "acknowledged": reconciled.acknowledged,
+                    "detail": detail,
+                }
+            )
+            registry.record_recovery_event(
+                task.task_id,
+                action=f"watchdog_overrun_ack:{reconciled.state}",
+                safe_to_dispatch=False,
+                reason=detail,
+                payload={"attempt_id": attempt.attempt_id},
+            )
+        except (ActionBlocked, UiaActionUnavailable, UiaProbeUnavailable) as exc:
+            results.append(
+                {
+                    "task_id": task.task_id,
+                    "kind": "overrun_ack",
+                    "attempt_id": attempt.attempt_id,
+                    "state": attempt.state.value,
+                    "acknowledged": False,
+                    "detail": f"overrun acknowledgement blocked: {exc}",
+                }
+            )
+
+    for original_task in tasks:
+        clock = overrun_clock(
+            registry,
+            original_task.task_id,
+            policy=policy,
+            now=ts,
+        )
+        if clock is None or not clock.sample_due:
+            continue
+        if registry.unresolved_action_attempt(original_task.task_id) is not None:
+            continue
+
+        try:
+            _refresh_uia(registry, original_task.task_id, uia_probe)
+        except UiaProbeUnavailable as exc:
+            if clock.due:
+                results.append(
+                    {
+                        "task_id": original_task.task_id,
+                        "kind": "overrun_dispatch",
+                        "submitted": False,
+                        "detail": f"fresh exact-window observation unavailable: {exc}",
+                    }
+                )
+            continue
+
+        action_now = time.time() if now is None else ts
+        previous = registry.latest_reconciliation(original_task.task_id)
+        task, browser, lsm, workspace, assessment = _assessment(
+            registry,
+            original_task.task_id,
+            adapter,
+            workspace_probe,
+            policy=None,
+            reconcile_workspace=True,
+            refresh_uia=False,
+        )
+        current = _record_current_reconciliation(
+            registry,
+            task,
+            browser,
+            lsm,
+            workspace,
+            assessment,
+        )
+        clock = overrun_clock(registry, task.task_id, policy=policy, now=action_now)
+        if clock is None or not clock.due:
+            continue
+
+        plan = build_overrun_dispatch_plan(
+            registry,
+            task,
+            clock=clock,
+            previous=previous,
+            current=current,
+            browser=browser,
+            policy=policy,
+            transport_enabled=True,
+            now=action_now,
+        )
+        plan = apply_unresolved_action_gate(
+            plan,
+            registry.unresolved_action_attempt(task.task_id),
+        )
+        if not plan.would_dispatch:
+            results.append(
+                {
+                    "task_id": task.task_id,
+                    "kind": "overrun_dispatch",
+                    "submitted": False,
+                    "detail": plan.reason,
+                    "elapsed_s": clock.elapsed_s,
+                    "anchor_at": clock.anchor_at,
+                    "blockers": list(plan.blockers),
+                }
+            )
+            continue
+
+        recommendation = RecoveryRecommendation(
+            task_id=task.task_id,
+            action="reconcile_then_continue",
+            safe_to_dispatch=False,
+            reason="hard-overrun wall clock exceeded; continue the same durable task",
+            prompt=OVERRUN_CONTINUE_PROMPT,
+            evidence=list(assessment.evidence),
+        )
+        try:
+            execution = execute_current_worker_recovery(
+                registry,
+                plan=plan,
+                recommendation=recommendation,
+                policy=DispatchExecutionPolicy(
+                    enabled=True,
+                    confirmed_task_id=task.task_id,
+                    consume_recovery_budget=False,
+                    attempt_metadata={
+                        "trigger_kind": OVERRUN_TRIGGER_KIND,
+                        "overrun_after_s": float(policy.overrun_after_s),
+                        "overrun_anchor_at": clock.anchor_at,
+                        "overrun_due_at": clock.due_at,
+                    },
+                ),
+                transport_factory=lambda binding: ChromeUiaActionTransport.from_binding(
+                    binding,
+                    enabled=True,
+                ),
+                now=action_now,
+            )
+        except (ActionBlocked, DispatchDisabled, UiaActionUnavailable) as exc:
+            registry.record_recovery_event(
+                task.task_id,
+                action="watchdog_overrun_blocked",
+                safe_to_dispatch=False,
+                reason=str(exc),
+                payload={"dispatch_plan": asdict(plan)},
+            )
+            results.append(
+                {
+                    "task_id": task.task_id,
+                    "kind": "overrun_dispatch",
+                    "submitted": False,
+                    "detail": str(exc),
+                }
+            )
+            continue
+
+        registry.record_recovery_event(
+            task.task_id,
+            action=f"watchdog_overrun:{execution.state}",
+            safe_to_dispatch=execution.submitted,
+            reason=execution.detail,
+            payload={
+                "attempt_id": execution.attempt_id,
+                "side_effect_possible": execution.side_effect_possible,
+                "elapsed_s": clock.elapsed_s,
+                "anchor_at": clock.anchor_at,
+                "dispatch_plan": asdict(plan),
+            },
+        )
+        results.append(
+            {
+                "task_id": task.task_id,
+                "kind": "overrun_dispatch",
+                "attempt_id": execution.attempt_id,
+                "state": execution.state,
+                "submitted": execution.submitted,
+                "side_effect_possible": execution.side_effect_possible,
+                "elapsed_s": clock.elapsed_s,
+                "anchor_at": clock.anchor_at,
                 "detail": execution.detail,
             }
         )
@@ -1730,6 +1992,8 @@ def main(argv: list[str] | None = None) -> int:
                 interval_s=max(1.0, float(args.interval)),
                 use_uia=args.uia,
                 auto_recover_timeouts=args.auto_recover_timeouts,
+                auto_continue_overruns=args.auto_continue_overruns,
+                overrun_after_s=max(1.0, float(args.overrun_after)),
                 lsm_state_dir=args.lsm_state_dir,
                 git_bin=args.git_bin,
                 log_path=args.log,
@@ -1777,6 +2041,8 @@ def main(argv: list[str] | None = None) -> int:
                 interval_s=max(1.0, float(args.interval)),
                 use_uia=args.uia,
                 auto_recover_timeouts=args.auto_recover_timeouts,
+                auto_continue_overruns=args.auto_continue_overruns,
+                overrun_after_s=max(1.0, float(args.overrun_after)),
                 lsm_state_dir=args.lsm_state_dir,
                 git_bin=args.git_bin,
                 log_path=args.log,
@@ -2390,6 +2656,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise DispatchDisabled(
                     "--auto-recover-timeouts requires --uia exact-window observation"
                 )
+            if args.auto_continue_overruns and not args.uia:
+                raise DispatchDisabled(
+                    "--auto-continue-overruns requires --uia exact-window observation"
+                )
             policy = WatchPolicy(
                 browser_suspect_after_s=args.browser_suspect_after,
                 network_suspect_after_s=args.network_suspect_after,
@@ -2440,7 +2710,22 @@ def main(argv: list[str] | None = None) -> int:
                     if args.once or signature != last_signature:
                         _emit_attention(queue, as_json=args.json)
                         last_signature = signature
-                    if args.auto_recover_timeouts:
+                    overrun_results = []
+                    if args.auto_continue_overruns:
+                        overrun_results = _auto_continue_overrun_cycle(
+                            registry,
+                            adapter,
+                            workspace_probe,
+                            policy=OverrunContinuationPolicy(
+                                enabled=True,
+                                overrun_after_s=max(1.0, float(args.overrun_after)),
+                            ),
+                        )
+                    overrun_side_effect = any(
+                        bool(item.get("submitted")) or bool(item.get("side_effect_possible"))
+                        for item in overrun_results
+                    )
+                    if args.auto_recover_timeouts and not overrun_side_effect:
                         _auto_recover_timeout_cycle(
                             registry,
                             adapter,

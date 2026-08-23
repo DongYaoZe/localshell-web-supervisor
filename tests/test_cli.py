@@ -66,13 +66,27 @@ class CliInputTests(unittest.TestCase):
                 redirect_stdout(out),
             ):
                 code = main([
-                    "--db", str(db), "watchdog-restart", "--wait", "0", "--json"
+                    "--db", str(db), "watchdog-restart", "--wait", "0",
+                    "--auto-continue-overruns", "--overrun-after", "1520", "--json"
                 ])
             self.assertEqual(code, 0)
             launch.assert_called_once()
+            self.assertTrue(launch.call_args.kwargs["auto_continue_overruns"])
+            self.assertEqual(launch.call_args.kwargs["overrun_after_s"], 1520.0)
             payload = json.loads(out.getvalue())
             self.assertTrue(payload["stop"]["stopped"])
             self.assertTrue(payload["launch"]["lease_ready"])
+
+    def test_watch_overrun_autocontinue_requires_uia(self):
+        with tempfile.TemporaryDirectory() as td:
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = main([
+                    "--db", str(Path(td) / "registry.sqlite3"),
+                    "watch", "--once", "--auto-continue-overruns",
+                ])
+            self.assertEqual(code, 12)
+            self.assertIn("requires --uia", err.getvalue())
 
     def test_watchdog_assessment_accepts_new_task_before_protocol_bootstrap(self):
         with tempfile.TemporaryDirectory() as td:

@@ -1131,6 +1131,72 @@ class Registry:
         )
         self._conn.commit()
 
+    def record_current_worker_action_attempt(self, attempt: ActionAttempt) -> None:
+        """Atomically persist one ARMED current-worker action without recovery-budget charge.
+
+        This is for deterministic maintenance nudges such as the hard wall-clock continuation.
+        It deliberately retains the same terminal/current-worker/unresolved-action fences as
+        fault recovery while leaving the bounded fault-recovery budget untouched.
+        """
+        if attempt.state != ActionAttemptState.ARMED:
+            raise ValueError("current-worker action must be ARMED before durable recording")
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            task_row = self._conn.execute(
+                "SELECT state, current_worker_id FROM tasks WHERE task_id = ?",
+                (attempt.task_id,),
+            ).fetchone()
+            if task_row is None:
+                raise KeyError(f"unknown task: {attempt.task_id}")
+            if task_row["state"] in {
+                SupervisorState.COMPLETED.value,
+                SupervisorState.ABANDONED.value,
+            }:
+                raise RuntimeError("terminal task cannot arm a current-worker action")
+            worker_row = self._conn.execute(
+                "SELECT task_id, status FROM workers WHERE worker_id = ?",
+                (attempt.worker_id,),
+            ).fetchone()
+            if worker_row is None:
+                raise KeyError(f"unknown worker: {attempt.worker_id}")
+            if worker_row["task_id"] != attempt.task_id:
+                raise ValueError("action attempt worker belongs to a different task")
+            if (
+                task_row["current_worker_id"] != attempt.worker_id
+                or worker_row["status"] != WorkerStatus.ACTIVE.value
+            ):
+                raise RuntimeError("current-worker action worker is no longer authoritative")
+            states = tuple(state.value for state in UNRESOLVED_ACTION_STATES)
+            placeholders = ",".join("?" for _ in states)
+            unresolved = self._conn.execute(
+                f"SELECT attempt_id FROM action_attempts WHERE task_id = ? AND state IN ({placeholders}) LIMIT 1",
+                (attempt.task_id, *states),
+            ).fetchone()
+            if unresolved is not None:
+                raise RuntimeError(
+                    f"task {attempt.task_id} already has unresolved action {unresolved['attempt_id']}"
+                )
+            payload = asdict(attempt)
+            payload["state"] = attempt.state.value
+            self._conn.execute(
+                """INSERT INTO action_attempts
+                   (attempt_id, task_id, worker_id, state, created_at, updated_at, payload_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    attempt.attempt_id,
+                    attempt.task_id,
+                    attempt.worker_id,
+                    attempt.state.value,
+                    attempt.created_at,
+                    attempt.updated_at,
+                    json.dumps(payload, ensure_ascii=False),
+                ),
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
     def record_recovery_action_attempt(self, attempt: ActionAttempt) -> None:
         """Atomically persist an ARMED recovery action and consume one recovery budget slot."""
         if attempt.state != ActionAttemptState.ARMED:

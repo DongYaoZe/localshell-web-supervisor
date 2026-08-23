@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from .overrun_continuation import DEFAULT_OVERRUN_AFTER_S
 from .registry import Registry
 
 
@@ -145,6 +146,8 @@ def build_watchdog_command(
     interval_s: float,
     use_uia: bool,
     auto_recover_timeouts: bool = False,
+    auto_continue_overruns: bool = False,
+    overrun_after_s: float = float(DEFAULT_OVERRUN_AFTER_S),
     lsm_state_dir: str | None = None,
     git_bin: str | None = None,
     lease_owner: str | None = None,
@@ -157,10 +160,16 @@ def build_watchdog_command(
     command += ["watch", "--interval", str(max(1.0, float(interval_s)))]
     if lease_owner:
         command += ["--lease-owner", lease_owner]
-    if use_uia or auto_recover_timeouts:
+    if use_uia or auto_recover_timeouts or auto_continue_overruns:
         command.append("--uia")
     if auto_recover_timeouts:
         command.append("--auto-recover-timeouts")
+    if auto_continue_overruns:
+        command += [
+            "--auto-continue-overruns",
+            "--overrun-after",
+            str(max(1.0, float(overrun_after_s))),
+        ]
     return command
 
 
@@ -172,6 +181,8 @@ def launch_detached_watchdog(
     interval_s: float = 30.0,
     use_uia: bool = False,
     auto_recover_timeouts: bool = False,
+    auto_continue_overruns: bool = False,
+    overrun_after_s: float = float(DEFAULT_OVERRUN_AFTER_S),
     lsm_state_dir: str | None = None,
     git_bin: str | None = None,
     log_path: str | Path | None = None,
@@ -192,6 +203,8 @@ def launch_detached_watchdog(
         interval_s=interval_s,
         use_uia=use_uia,
         auto_recover_timeouts=auto_recover_timeouts,
+        auto_continue_overruns=auto_continue_overruns,
+        overrun_after_s=overrun_after_s,
         lsm_state_dir=lsm_state_dir,
         git_bin=git_bin,
         lease_owner=lease_owner,

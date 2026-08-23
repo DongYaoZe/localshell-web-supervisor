@@ -218,6 +218,12 @@ class ActionRegistryTests(unittest.TestCase):
         self.assertIsNone(self.registry.unresolved_action_attempt("t1"))
         self.registry.record_action_attempt(attempt(now=NOW + 2))
 
+    def test_nonbudgeted_current_worker_writer_rechecks_terminal_state_atomically(self):
+        self.registry.update_state("t1", SupervisorState.COMPLETED)
+        with self.assertRaises(RuntimeError):
+            self.registry.record_current_worker_action_attempt(attempt())
+        self.assertEqual(self.registry.action_attempts("t1"), [])
+
     def test_positive_acknowledgement_releases_duplicate_send_lock(self):
         armed = self.arm()
         self.registry.mark_action_submitted(

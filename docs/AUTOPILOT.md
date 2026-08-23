@@ -1,26 +1,34 @@
-# LWS 0.9 same-worker timeout autopilot
+# Same-worker watchdog autopilot
 
-LWS 0.9 closes the operator loop for one narrow failure class: an already-registered current web chat worker visibly reports a recognized delivery error such as `Message delivery timed out`, while durable Local Shell MCP and workspace evidence show that no local work is still in flight.
+LWS supports two explicitly opted-in same-worker continuation triggers. Delivery-error recovery handles recognized failures such as `Message delivery timed out`. Hard-overrun continuation handles the separate case where one managed work turn has exceeded a configured wall-clock limit (default 1520 seconds = 25m20s) without durable completion.
 
-This feature is explicitly opt-in. It does not attempt to prevent the web chat platform from producing a delivery timeout; it removes the need for a human to type `continue` when the supervisor can prove that a same-worker continuation is safe.
+Neither mode treats `continue` as idempotent. Both reuse the exact-window write-ahead action protocol so an ambiguous previous send is reconciled rather than replayed.
 
 ## Enabling
 
 Foreground:
 
 ```powershell
-python -m lws watch --uia --auto-recover-timeouts
+python -m lws watch --uia --auto-recover-timeouts --auto-continue-overruns --overrun-after 1520
 ```
 
 Detached resident host:
 
 ```powershell
-python -m lws watchdog-start --auto-recover-timeouts
+python -m lws watchdog-start --auto-recover-timeouts --auto-continue-overruns --overrun-after 1520
 ```
 
-The detached form automatically enables exact-window UIA observation. Tasks must already exist in the selected LWS registry with the correct current conversation URL and durable LSM logical-session identity.
+The detached form automatically enables exact-window UIA observation. Tasks must already exist in the selected LWS registry with the correct current conversation URL. Delivery-error recovery additionally depends on the durable LSM logical-session/workspace evidence described below.
 
-## Recovery ladder
+## Hard-overrun ladder
+
+For `--auto-continue-overruns`, the watchdog uses a per-current-worker turn clock. The anchor is the newest of the worker start, the most recent effective LWS continuation, and the start of the most recent observed manual generation episode. Streaming DOM/signature changes inside one generation do not keep resetting this clock.
+
+During the lead window before the deadline the watchdog records a reconciliation sample but does not send. After the deadline it requires a second fresh sample with the same semantic fence, the same active current worker, the exact registered URL/HWND/PID/Chrome identity, a fresh browser observation, a usable composer, and generation no longer active. `COMPLETED`, `ABANDONED`, `BLOCKED`, and `NEEDS_HUMAN` states suppress the nudge.
+
+The action is persisted before submission. `SUBMITTED`, `RECONCILE_REQUIRED`, or later `ACKNOWLEDGED` state resets the turn clock durably, so a watchdog restart cannot replay the same nudge. A proven pre-send failure does not reset the clock, but a retry cooldown applies; this includes a rate-limit modal that was detected/dismissed before Send. Hard-overrun nudges are maintenance actions and do not consume the bounded fault-recovery budget. At most one possible browser send is attempted per watchdog cycle across the overrun and delivery-error paths.
+
+## Delivery-error recovery ladder
 
 For a recognized delivery error, one watchdog cycle does the following:
 

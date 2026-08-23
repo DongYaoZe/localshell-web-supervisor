@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from .action_runtime import SubmitOutcome, require_no_unresolved_action, submit_armed_action
@@ -20,6 +20,8 @@ from .uia_actions import (
 class DispatchExecutionPolicy:
     enabled: bool = False
     confirmed_task_id: str | None = None
+    consume_recovery_budget: bool = True
+    attempt_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -111,7 +113,12 @@ def execute_current_worker_recovery(
         pre_action_signature=browser.message_signature,
         now=now,
     )
-    registry.record_recovery_action_attempt(attempt)
+    if policy.attempt_metadata:
+        attempt.metadata.update(dict(policy.attempt_metadata))
+    if policy.consume_recovery_budget:
+        registry.record_recovery_action_attempt(attempt)
+    else:
+        registry.record_current_worker_action_attempt(attempt)
     outcome: SubmitOutcome = submit_armed_action(
         registry,
         attempt_id=attempt.attempt_id,
