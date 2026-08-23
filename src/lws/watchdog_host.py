@@ -173,6 +173,26 @@ def build_watchdog_command(
     return command
 
 
+def detached_watchdog_python(
+    python_executable: str | Path,
+    *,
+    platform_name: str | None = None,
+) -> str:
+    """Prefer the windowless Python launcher for a detached Windows resident.
+
+    `CREATE_NO_WINDOW` suppresses the console of the process we start, but a virtualenv
+    `python.exe` launcher may then spawn the base console `python.exe`, which can acquire a
+    visible window of its own. Starting the sibling `pythonw.exe` keeps both launcher and
+    interpreter windowless. Other platforms keep the supplied executable unchanged.
+    """
+    executable = Path(python_executable)
+    if (platform_name or os.name) == "nt":
+        windowless = executable.with_name("pythonw.exe")
+        if windowless.is_file():
+            return str(windowless)
+    return str(executable)
+
+
 def launch_detached_watchdog(
     registry: Registry,
     *,
@@ -198,7 +218,7 @@ def launch_detached_watchdog(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     lease_owner = f"host:{uuid.uuid4().hex}"
     command = build_watchdog_command(
-        python_executable=sys.executable,
+        python_executable=detached_watchdog_python(sys.executable),
         db_path=db_path,
         interval_s=interval_s,
         use_uia=use_uia,

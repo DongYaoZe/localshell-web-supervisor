@@ -9,6 +9,7 @@ from unittest.mock import patch
 from lws.registry import Registry
 from lws.watchdog_host import (
     build_watchdog_command,
+    detached_watchdog_python,
     inspect_watchdog_host,
     launch_detached_watchdog,
     pid_exists,
@@ -69,6 +70,22 @@ class WatchdogHostTests(unittest.TestCase):
         self.assertIn("--overrun-after", command)
         index = command.index("--overrun-after")
         self.assertEqual(command[index + 1], "1520.0")
+
+    def test_windows_detached_watchdog_prefers_pythonw_launcher(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            python = root / "python.exe"
+            pythonw = root / "pythonw.exe"
+            python.write_bytes(b"")
+            pythonw.write_bytes(b"")
+            self.assertEqual(
+                Path(detached_watchdog_python(python, platform_name="nt")),
+                pythonw,
+            )
+            self.assertEqual(
+                Path(detached_watchdog_python(python, platform_name="posix")),
+                python,
+            )
 
     def test_windows_watchdog_creationflags_include_no_console_window(self):
         flags = watchdog_creationflags("nt")
