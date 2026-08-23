@@ -3,6 +3,7 @@ import unittest
 from lws.models import BrowserObservation, WorkerRecord, WorkerStatus
 from lws.uia import (
     UiaProbeUnavailable,
+    _POWERSHELL_DISCOVER,
     _POWERSHELL_PROBE,
     conversation_id_from_url,
     normalize_url,
@@ -101,6 +102,15 @@ class UiaNormalizationTests(unittest.TestCase):
         self.assertIn("'view_1012'", _POWERSHELL_PROBE)
         self.assertNotIn("Address and search bar", _POWERSHELL_PROBE)
         self.assertNotIn("MainWindowHandle", _POWERSHELL_PROBE)
+
+    def test_discovery_probe_is_identity_only_and_uses_address_bar(self):
+        self.assertIn("AutomationElement]::RootElement", _POWERSHELL_DISCOVER)
+        self.assertIn("'view_1012'", _POWERSHELL_DISCOVER)
+        self.assertIn("window_handle", _POWERSHELL_DISCOVER)
+        self.assertIn("browser_pid", _POWERSHELL_DISCOVER)
+        self.assertIn("address", _POWERSHELL_DISCOVER)
+        self.assertNotIn("text_tail", _POWERSHELL_DISCOVER)
+        self.assertNotIn("prompt-textarea", _POWERSHELL_DISCOVER)
 
     def test_error_result_is_not_normalized_as_browser_state(self):
         with self.assertRaises(UiaProbeUnavailable):

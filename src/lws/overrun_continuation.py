@@ -46,6 +46,7 @@ class OverrunContinuationPolicy:
     min_reconciliation_separation_s: float = 3.0
     max_browser_observation_age_s: float = 30.0
     min_dom_quiet_s: float = 2.0
+    auto_discover_visible_conversations: bool = False
 
 
 @dataclass(frozen=True, slots=True)

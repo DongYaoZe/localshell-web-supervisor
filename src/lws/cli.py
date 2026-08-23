@@ -74,7 +74,7 @@ from .timeout_recovery import (
     gate_timeout_dispatch_plan,
     is_recoverable_delivery_error,
 )
-from .uia import ChromeUiaProbe, UiaProbeUnavailable
+from .uia import ChromeUiaProbe, UiaProbeUnavailable, conversation_id_from_url, normalize_url
 from .uia_actions import ChromeUiaAckObserver, ChromeUiaActionTransport, UiaActionUnavailable
 from .watchdog_host import (
     inspect_watchdog_host,
@@ -1088,7 +1088,9 @@ def _auto_continue_overrun_cycle(
     ts = time.time() if now is None else float(now)
     results: list[dict] = []
     uia_probe = ChromeUiaProbe()
-    tasks = list(registry.list_tasks())
+    if policy.auto_discover_visible_conversations:
+        _sync_visible_conversation_watchers(registry, uia_probe, policy=policy)
+    tasks = _canonical_overrun_tasks(registry)
 
     for task in tasks:
         attempt = registry.unresolved_action_attempt(task.task_id)
@@ -1171,7 +1173,6 @@ def _auto_continue_overrun_cycle(
                 )
             continue
 
-        action_now = time.time() if now is None else ts
         previous = registry.latest_reconciliation(original_task.task_id)
         task, browser, lsm, workspace, assessment = _assessment(
             registry,
@@ -1189,6 +1190,15 @@ def _auto_continue_overrun_cycle(
             lsm,
             workspace,
             assessment,
+        )
+        # Fresh UIA/reconciliation evidence is collected during this cycle. Never compare
+        # those timestamps against a wall-clock sample captured before the evidence existed:
+        # that makes valid live evidence look future-dated and permanently blocks dispatch.
+        action_now = time.time() if now is None else ts
+        action_now = max(
+            action_now,
+            float(current.created_at),
+            float(browser.observed_at) if browser is not None else action_now,
         )
         clock = overrun_clock(registry, task.task_id, policy=policy, now=action_now)
         if clock is None or not clock.due:
@@ -1301,6 +1311,109 @@ def _auto_continue_overrun_cycle(
             break
 
     return results
+
+
+AUTO_WATCH_TASK_PREFIX = "watch-chat-"
+
+
+def _sync_visible_conversation_watchers(
+    registry: Registry,
+    uia_probe: ChromeUiaProbe,
+    *,
+    policy: OverrunContinuationPolicy,
+) -> list[str]:
+    """Discover visible normal-Chrome conversations and give each one one durable watch owner.
+
+    This is intentionally conversation-level rather than project/task-level. Existing LWS task
+    aliases may point at the same web conversation; the synthetic owner prevents those aliases
+    from producing duplicate overrun sends.
+    """
+    discovered: list[str] = []
+    try:
+        rows = uia_probe.discover_conversations()
+    except UiaProbeUnavailable:
+        return discovered
+    for row in rows:
+        url = str(row.get("url") or "").strip()
+        conversation_id = conversation_id_from_url(url)
+        if not conversation_id:
+            continue
+        task_id = f"{AUTO_WATCH_TASK_PREFIX}{conversation_id.lower()}"
+        try:
+            task = registry.get_task(task_id)
+        except KeyError:
+            task = registry.register_task(
+                task_id=task_id,
+                project="chatgpt-autowatch",
+                objective="automatic 25m20 visible-conversation watchdog",
+                cwd=str(Path.cwd()),
+                conversation_url=url,
+                conversation_id=conversation_id,
+            )
+            registry.set_checkpoint(
+                task_id,
+                {"auto_watch": True, "conversation_id": conversation_id},
+            )
+        if not task.current_worker_id:
+            worker = registry.add_worker(
+                task_id,
+                url,
+                conversation_id=conversation_id,
+                make_current=True,
+            )
+            task = registry.get_task(task_id)
+        else:
+            worker = registry.get_worker(task.current_worker_id)
+            if normalize_url(worker.conversation_url) != normalize_url(url):
+                worker = registry.add_worker(
+                    task_id,
+                    url,
+                    conversation_id=conversation_id,
+                    make_current=True,
+                )
+        registry.bind_worker_window(
+            worker.worker_id,
+            window_handle=int(row["window_handle"]),
+            browser_pid=int(row["browser_pid"]),
+            chrome_executable=uia_probe.chrome_executable or "",
+            conversation_url=url,
+            source="windows_uia_autodiscovery",
+            observed_at=float(row.get("observed_at") or time.time()),
+            ttl_s=max(60.0, float(policy.max_browser_observation_age_s) + 30.0),
+        )
+        discovered.append(task_id)
+    return discovered
+
+
+def _canonical_overrun_tasks(registry: Registry) -> list:
+    """Choose at most one current task for each conversation URL.
+
+    A synthetic auto-watch owner wins over legacy task aliases. Without a synthetic owner,
+    choose the most recently updated task deterministically so one URL can never be nudged twice
+    in the same or later cycle merely because multiple durable task records reference it.
+    """
+    groups: dict[str, list] = {}
+    for task in registry.list_tasks():
+        if task.state in {SupervisorState.COMPLETED, SupervisorState.ABANDONED}:
+            continue
+        if not task.current_worker_id:
+            continue
+        try:
+            worker = registry.get_worker(task.current_worker_id)
+        except KeyError:
+            continue
+        if worker.status != WorkerStatus.ACTIVE or not worker.conversation_url:
+            continue
+        conversation_id = conversation_id_from_url(worker.conversation_url)
+        key = f"conversation:{conversation_id.lower()}" if conversation_id else normalize_url(worker.conversation_url)
+        groups.setdefault(key, []).append(task)
+
+    selected = []
+    for candidates in groups.values():
+        auto = [task for task in candidates if task.task_id.startswith(AUTO_WATCH_TASK_PREFIX)]
+        pool = auto or candidates
+        selected.append(max(pool, key=lambda task: (float(task.updated_at), task.task_id)))
+    return selected
 
 
 def _print_json(data) -> None:
@@ -2719,6 +2832,7 @@ def main(argv: list[str] | None = None) -> int:
                             policy=OverrunContinuationPolicy(
                                 enabled=True,
                                 overrun_after_s=max(1.0, float(args.overrun_after)),
+                                auto_discover_visible_conversations=True,
                             ),
                         )
                     overrun_side_effect = any(

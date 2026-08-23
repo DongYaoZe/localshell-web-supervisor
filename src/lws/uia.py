@@ -185,6 +185,59 @@ $json = $result | ConvertTo-Json -Compress -Depth 8
 [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
 '''
 
+_POWERSHELL_DISCOVER = r'''
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+
+function Get-Value([System.Windows.Automation.AutomationElement]$e) {
+    try {
+        $p = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($p) { return $p.Current.Value }
+    } catch {}
+    return $null
+}
+
+$expectedExe = [string]$env:LWS_EXPECTED_CHROME_EXE
+$desktop = [System.Windows.Automation.AutomationElement]::RootElement
+$topWindows = $desktop.FindAll(
+    [System.Windows.Automation.TreeScope]::Children,
+    [System.Windows.Automation.Condition]::TrueCondition
+)
+$addressCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+    'view_1012'
+)
+$rows = @()
+for ($w = 0; $w -lt $topWindows.Count; $w++) {
+    $root = $topWindows.Item($w)
+    if ([string]$root.Current.ClassName -ne 'Chrome_WidgetWin_1') { continue }
+    $chromePid = [int]$root.Current.ProcessId
+    if (-not $chromePid) { continue }
+    try { $proc = Get-Process -Id $chromePid -ErrorAction Stop } catch { continue }
+    if ($proc.ProcessName -ne 'chrome') { continue }
+    $procPath = [string]$proc.Path
+    if ($expectedExe -and (
+        -not $procPath -or -not $procPath.Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase)
+    )) { continue }
+    $addressBar = $root.FindFirst(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        $addressCond
+    )
+    if (-not $addressBar) { continue }
+    $address = Get-Value $addressBar
+    if (-not $address) { continue }
+    $rows += [pscustomobject]@{
+        observed_at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0
+        browser_pid = [int]$proc.Id
+        window_handle = [int64]$root.Current.NativeWindowHandle
+        address = [string]$address
+    }
+}
+$json = @($rows) | ConvertTo-Json -Compress -Depth 4
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+'''
+
 _STOP_MARKERS = ("stop answering", "stop generating", "stop response", "停止生成", "停止回答")
 _SEND_MARKERS = ("send", "send prompt", "send message", "发送", "发送消息")
 _ERROR_MARKERS = (
@@ -354,6 +407,51 @@ class ChromeUiaProbe:
         if not isinstance(result, dict):
             raise UiaProbeUnavailable("UIA probe output is not an object")
         return result
+
+    def discover_conversations(self) -> list[dict[str, Any]]:
+        """Return bounded identities for visible top-level ChatGPT conversation windows."""
+        if not self.available:
+            raise UiaProbeUnavailable("Windows UI Automation is only available on Windows")
+        env = os.environ.copy()
+        if self.chrome_executable:
+            env["LWS_EXPECTED_CHROME_EXE"] = self.chrome_executable
+        completed = subprocess.run(
+            [self.powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", _POWERSHELL_DISCOVER],
+            text=False,
+            capture_output=True,
+            timeout=self.timeout_s,
+            env=env,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise UiaProbeUnavailable(f"PowerShell UIA discovery exited {completed.returncode}: {detail[-1000:]}")
+        encoded = completed.stdout.decode("ascii", errors="ignore").strip().splitlines()
+        if not encoded:
+            raise UiaProbeUnavailable("PowerShell UIA discovery produced no output")
+        try:
+            data = json.loads(base64.b64decode(encoded[-1]).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise UiaProbeUnavailable(f"invalid UIA discovery output: {exc}") from exc
+        if isinstance(data, dict):
+            data = [data]
+        rows: list[dict[str, Any]] = []
+        for row in data or []:
+            if not isinstance(row, dict):
+                continue
+            address = str(row.get("address") or "").strip()
+            url = address if re.match(r"^https?://", address, re.I) else f"https://{address}"
+            if conversation_id_from_url(url) is None or not re.match(r"^https://chatgpt\.com/", url, re.I):
+                continue
+            rows.append({
+                "observed_at": float(row.get("observed_at") or time.time()),
+                "browser_pid": int(row.get("browser_pid") or 0),
+                "window_handle": int(row.get("window_handle") or 0),
+                "url": url,
+                "conversation_id": conversation_id_from_url(url),
+            })
+        return rows
 
     def observe(
         self,
