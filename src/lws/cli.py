@@ -82,6 +82,7 @@ from .watchdog_host import (
     stop_watchdog_host,
 )
 from .watcher import WatchPolicy, assess
+from .worker_persistence import WorkerProtocolPersistenceError
 from .workspace import WorkspaceProbe
 
 
@@ -832,15 +833,37 @@ def _scan_attention(
 ):
     assessed = []
     for task in registry.list_tasks():
-        refreshed, _browser, _lsm, _workspace, result = _assessment(
-            registry,
-            task.task_id,
-            adapter,
-            workspace_probe,
-            uia_probe,
-            policy,
-            refresh_uia=refresh_uia,
-        )
+        try:
+            refreshed, _browser, _lsm, _workspace, result = _assessment(
+                registry,
+                task.task_id,
+                adapter,
+                workspace_probe,
+                uia_probe,
+                policy,
+                refresh_uia=refresh_uia,
+            )
+        except UiaProbeUnavailable:
+            # One slow/missing Chrome window is observationally unavailable, not a reason
+            # to terminate the singleton resident. Fall back to already-durable evidence
+            # for this task and keep scanning the rest of the registry.
+            refreshed, _browser, _lsm, _workspace, result = _assessment(
+                registry,
+                task.task_id,
+                adapter,
+                workspace_probe,
+                None,
+                policy,
+                refresh_uia=False,
+            )
+        except WorkerProtocolPersistenceError as exc:
+            refreshed = task
+            result = Assessment(
+                SupervisorState.NEEDS_HUMAN,
+                f"worker protocol persistence error: {exc}",
+                "high",
+                ["worker_protocol.persistence_inconsistent=true"],
+            )
         assessed.append((refreshed, result))
     return attention_queue(assessed)
 

@@ -1,7 +1,10 @@
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from lws.models import BrowserObservation, WorkerRecord, WorkerStatus
 from lws.uia import (
+    ChromeUiaProbe,
     UiaProbeUnavailable,
     _POWERSHELL_DISCOVER,
     _POWERSHELL_PROBE,
@@ -111,6 +114,15 @@ class UiaNormalizationTests(unittest.TestCase):
         self.assertIn("address", _POWERSHELL_DISCOVER)
         self.assertNotIn("text_tail", _POWERSHELL_DISCOVER)
         self.assertNotIn("prompt-textarea", _POWERSHELL_DISCOVER)
+
+    def test_probe_timeout_is_converted_to_uia_unavailable(self):
+        probe = ChromeUiaProbe(timeout_s=1, chrome_executable=r"C:\\chrome.exe")
+        with patch(
+            "lws.uia.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["powershell.exe"], timeout=1),
+        ):
+            with self.assertRaisesRegex(UiaProbeUnavailable, "timed out"):
+                probe.raw_probe("https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
     def test_error_result_is_not_normalized_as_browser_state(self):
         with self.assertRaises(UiaProbeUnavailable):

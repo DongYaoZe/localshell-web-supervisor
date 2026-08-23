@@ -7,11 +7,13 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from lws.cli import _assessment, _read_json_file, main
+from lws.cli import _assessment, _read_json_file, _scan_attention, main
 from lws.models import SupervisorState
 from lws.registry import Registry
 from lws.ram import MemoryProbeUnavailable
+from lws.uia import UiaProbeUnavailable
 from lws.watchdog_host import WatchdogLaunchResult, WatchdogStopResult
+from lws.worker_persistence import WorkerProtocolPersistenceError
 
 
 class CliInputTests(unittest.TestCase):
@@ -87,6 +89,68 @@ class CliInputTests(unittest.TestCase):
                 ])
             self.assertEqual(code, 12)
             self.assertIn("requires --uia", err.getvalue())
+
+    def test_watchdog_scan_survives_one_uia_probe_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Registry(Path(td) / "registry.sqlite3")
+            try:
+                task = registry.register_task(
+                    task_id="uia-fallback",
+                    project="lws",
+                    objective="fixture",
+                    cwd=td,
+                )
+                assessment = __import__("lws.models", fromlist=["Assessment"]).Assessment(
+                    SupervisorState.QUEUED,
+                    "durable fallback",
+                    "medium",
+                    [],
+                )
+                with patch(
+                    "lws.cli._assessment",
+                    side_effect=[
+                        UiaProbeUnavailable("fixture timeout"),
+                        (task, None, None, None, assessment),
+                    ],
+                ) as mocked:
+                    queue = _scan_attention(
+                        registry,
+                        object(),
+                        object(),
+                        __import__("lws.watcher", fromlist=["WatchPolicy"]).WatchPolicy(),
+                        uia_probe=object(),
+                        refresh_uia=True,
+                    )
+                self.assertEqual(queue, [])
+                self.assertEqual(mocked.call_count, 2)
+            finally:
+                registry.close()
+
+    def test_watchdog_scan_isolates_worker_protocol_persistence_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry = Registry(Path(td) / "registry.sqlite3")
+            try:
+                registry.register_task(
+                    task_id="protocol-corrupt",
+                    project="lws",
+                    objective="fixture",
+                    cwd=td,
+                )
+                with patch(
+                    "lws.cli._assessment",
+                    side_effect=WorkerProtocolPersistenceError("fixture mismatch"),
+                ):
+                    queue = _scan_attention(
+                        registry,
+                        object(),
+                        object(),
+                        __import__("lws.watcher", fromlist=["WatchPolicy"]).WatchPolicy(),
+                    )
+                self.assertEqual(len(queue), 1)
+                self.assertEqual(queue[0].state, SupervisorState.NEEDS_HUMAN)
+                self.assertIn("fixture mismatch", queue[0].reason)
+            finally:
+                registry.close()
 
     def test_watchdog_assessment_accepts_new_task_before_protocol_bootstrap(self):
         with tempfile.TemporaryDirectory() as td:

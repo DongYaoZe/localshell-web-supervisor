@@ -374,23 +374,28 @@ class ChromeUiaProbe:
             env["LWS_EXPECTED_CHROME_EXE"] = self.chrome_executable
         if expected_hwnd is not None:
             env["LWS_EXPECTED_HWND"] = str(int(expected_hwnd))
-        completed = subprocess.run(
-            [
-                self.powershell,
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                _POWERSHELL_PROBE,
-            ],
-            text=False,
-            capture_output=True,
-            timeout=self.timeout_s,
-            env=env,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            completed = subprocess.run(
+                [
+                    self.powershell,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    _POWERSHELL_PROBE,
+                ],
+                text=False,
+                capture_output=True,
+                timeout=self.timeout_s,
+                env=env,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise UiaProbeUnavailable(
+                f"PowerShell UIA probe timed out after {self.timeout_s:.1f}s"
+            ) from exc
         if completed.returncode != 0:
             detail = completed.stderr.decode("utf-8", errors="replace").strip()
             raise UiaProbeUnavailable(
@@ -415,15 +420,20 @@ class ChromeUiaProbe:
         env = os.environ.copy()
         if self.chrome_executable:
             env["LWS_EXPECTED_CHROME_EXE"] = self.chrome_executable
-        completed = subprocess.run(
-            [self.powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", _POWERSHELL_DISCOVER],
-            text=False,
-            capture_output=True,
-            timeout=self.timeout_s,
-            env=env,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            completed = subprocess.run(
+                [self.powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", _POWERSHELL_DISCOVER],
+                text=False,
+                capture_output=True,
+                timeout=self.timeout_s,
+                env=env,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise UiaProbeUnavailable(
+                f"PowerShell UIA discovery timed out after {self.timeout_s:.1f}s"
+            ) from exc
         if completed.returncode != 0:
             detail = completed.stderr.decode("utf-8", errors="replace").strip()
             raise UiaProbeUnavailable(f"PowerShell UIA discovery exited {completed.returncode}: {detail[-1000:]}")
