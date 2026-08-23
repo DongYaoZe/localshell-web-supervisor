@@ -302,10 +302,27 @@ class Registry:
                 now=ts,
             )
             if not completed_worker.accepted:
-                raise RuntimeError(
-                    f"current child worker completion rejected: {completed_worker.code.value}"
-                )
-            state = completed_worker.state
+                if completed_worker.code == worker_protocol_model.DecisionCode.LEASE_EXPIRED:
+                    abandoned_worker = self.protocol_abandon_worker(
+                        child_task_id,
+                        state.current_worker_id,
+                        generation=state.generation,
+                        expected_revision=state.revision,
+                        now=ts,
+                    )
+                    if not abandoned_worker.accepted:
+                        raise RuntimeError(
+                            "expired current child worker abandonment rejected: "
+                            f"{abandoned_worker.code.value}"
+                        )
+                    state = abandoned_worker.state
+                else:
+                    raise RuntimeError(
+                        "current child worker completion rejected: "
+                        f"{completed_worker.code.value}"
+                    )
+            else:
+                state = completed_worker.state
 
         completed_task = self.protocol_complete_task(
             child_task_id,

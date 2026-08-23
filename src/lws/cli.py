@@ -761,7 +761,11 @@ def _assessment(
             network=network,
             policy=policy,
         )
-    if result.state != task.state and result.confidence in {"high", "medium"}:
+    if (
+        protocol is None
+        and result.state != task.state
+        and result.confidence in {"high", "medium"}
+    ):
         registry.update_state(task_id, result.state)
         task = registry.get_task(task_id)
     return task, browser, lsm, workspace, result

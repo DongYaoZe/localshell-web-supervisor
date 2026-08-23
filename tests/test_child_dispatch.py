@@ -208,6 +208,21 @@ class ChildDispatchTests(unittest.TestCase):
         self.assertEqual(completed.task_status, DurableTaskStatus.COMPLETED)
         self.assertEqual(completed.completion_ref, "commit:abc123")
 
+    def test_child_complete_abandons_expired_current_worker_then_completes_task(self):
+        self.create()
+        self.registry.adopt_child_worker(
+            "child-a", URL_A, worker_id="worker-a", lease_seconds=5, now=20
+        )
+        completed = self.registry.complete_child_dispatch(
+            "child-a", completion_ref="commit:accepted", now=30
+        )
+        self.assertEqual(completed.task_status, DurableTaskStatus.COMPLETED)
+        self.assertEqual(completed.completion_ref, "commit:accepted")
+        self.assertIsNone(completed.current_worker_id)
+        worker = next(worker for worker in completed.workers if worker.worker_id == "worker-a")
+        self.assertEqual(worker.status, WorkerLeaseStatus.ABANDONED)
+        self.assertEqual(self.registry.get_task("child-a").state.value, "COMPLETED")
+
     def test_empty_prompt_rejected_before_any_child_write(self):
         with self.assertRaisesRegex(ValueError, "prompt"):
             self.create(prompt_text="   ")

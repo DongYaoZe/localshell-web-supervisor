@@ -144,6 +144,43 @@ class CliInputTests(unittest.TestCase):
             finally:
                 registry.close()
 
+    def test_watchdog_assessment_does_not_write_legacy_state_for_open_protocol_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "registry.sqlite3"
+            registry = Registry(db)
+            try:
+                registry.register_task(
+                    task_id="protocol-open",
+                    project="lws",
+                    objective="protocol fixture",
+                    cwd=td,
+                )
+                registry.bootstrap_worker_protocol("protocol-open")
+                assessment = __import__("lws.models", fromlist=["Assessment"]).Assessment(
+                    SupervisorState.RUNNING,
+                    "protocol task assessed as running",
+                    "high",
+                    ["fixture"],
+                )
+                with (
+                    patch("lws.cli._refresh_lsm", return_value=None),
+                    patch("lws.cli.assess", return_value=assessment),
+                ):
+                    task, _browser, _lsm, _workspace, result = _assessment(
+                        registry,
+                        "protocol-open",
+                        object(),
+                        object(),
+                    )
+                self.assertEqual(result.state, SupervisorState.RUNNING)
+                self.assertEqual(task.state, SupervisorState.QUEUED)
+                self.assertEqual(
+                    registry.get_task("protocol-open").state,
+                    SupervisorState.QUEUED,
+                )
+            finally:
+                registry.close()
+
     def test_json_file_accepts_utf8_bom(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "payload.json"
