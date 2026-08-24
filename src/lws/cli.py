@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 import json
 import os
 import socket
@@ -84,6 +85,10 @@ from .watchdog_host import (
 from .watcher import WatchPolicy, assess
 from .worker_persistence import WorkerProtocolPersistenceError
 from .workspace import WorkspaceProbe
+
+
+class WatchdogLeaseLost(RuntimeError):
+    """Raised when the resident singleton lease can no longer be renewed."""
 
 
 def default_db_path() -> Path:
@@ -830,9 +835,12 @@ def _scan_attention(
     *,
     uia_probe: ChromeUiaProbe | None = None,
     refresh_uia: bool = False,
+    keepalive: Callable[[], None] | None = None,
 ):
     assessed = []
     for task in registry.list_tasks():
+        if keepalive is not None:
+            keepalive()
         try:
             refreshed, _browser, _lsm, _workspace, result = _assessment(
                 registry,
@@ -864,7 +872,29 @@ def _scan_attention(
                 "high",
                 ["worker_protocol.persistence_inconsistent=true"],
             )
+        except UnsupportedLsmState:
+            raise
+        except Exception as exc:
+            # A single stale worker binding, corrupt task row, or slow browser adapter must not
+            # terminate the singleton portfolio watchdog. Surface the task as NEEDS_HUMAN and
+            # continue scanning the rest of the registry.
+            refreshed = task
+            result = Assessment(
+                SupervisorState.NEEDS_HUMAN,
+                f"watchdog task observation failed: {type(exc).__name__}: {exc}",
+                "high",
+                ["watchdog.task_observation_error=true"],
+            )
+            registry.record_recovery_event(
+                task.task_id,
+                action="watchdog_scan_error",
+                safe_to_dispatch=False,
+                reason=result.reason,
+                payload={"error_type": type(exc).__name__},
+            )
         assessed.append((refreshed, result))
+        if keepalive is not None:
+            keepalive()
     return attention_queue(assessed)
 
 
@@ -892,6 +922,7 @@ def _auto_recover_timeout_cycle(
     queue,
     *,
     policy: TimeoutRecoveryPolicy,
+    keepalive: Callable[[], None] | None = None,
 ) -> list[dict]:
     """Run one bounded resident timeout-recovery cycle.
 
@@ -911,6 +942,8 @@ def _auto_recover_timeout_cycle(
     # First reconcile any ambiguous/previously-submitted action. This is read-only and can
     # release the per-task send lock only from positive nonce/hash completion evidence.
     for task_id in task_ids:
+        if keepalive is not None:
+            keepalive()
         attempt = registry.unresolved_action_attempt(task_id)
         if attempt is None:
             continue
@@ -950,7 +983,7 @@ def _auto_recover_timeout_cycle(
                 reason=detail,
                 payload={"attempt_id": attempt.attempt_id},
             )
-        except (ActionBlocked, UiaActionUnavailable, UiaProbeUnavailable) as exc:
+        except (ActionBlocked, UiaActionUnavailable, UiaProbeUnavailable, WorkerProtocolPersistenceError, ValueError, RuntimeError) as exc:
             results.append(
                 {
                     "task_id": task_id,
@@ -963,6 +996,8 @@ def _auto_recover_timeout_cycle(
             )
 
     for task_id in task_ids:
+        if keepalive is not None:
+            keepalive()
         if registry.unresolved_action_attempt(task_id) is not None:
             continue
 
@@ -1098,6 +1133,7 @@ def _auto_continue_overrun_cycle(
     *,
     policy: OverrunContinuationPolicy,
     now: float | None = None,
+    keepalive: Callable[[], None] | None = None,
 ) -> list[dict]:
     """Run one bounded hard-overrun continuation cycle across all managed tasks.
 
@@ -1113,9 +1149,13 @@ def _auto_continue_overrun_cycle(
     uia_probe = ChromeUiaProbe()
     if policy.auto_discover_visible_conversations:
         _sync_visible_conversation_watchers(registry, uia_probe, policy=policy)
+        if keepalive is not None:
+            keepalive()
     tasks = _canonical_overrun_tasks(registry)
 
     for task in tasks:
+        if keepalive is not None:
+            keepalive()
         attempt = registry.unresolved_action_attempt(task.task_id)
         if attempt is None or attempt.metadata.get("trigger_kind") != OVERRUN_TRIGGER_KIND:
             continue
@@ -1171,6 +1211,8 @@ def _auto_continue_overrun_cycle(
             )
 
     for original_task in tasks:
+        if keepalive is not None:
+            keepalive()
         clock = overrun_clock(
             registry,
             original_task.task_id,
@@ -1197,15 +1239,34 @@ def _auto_continue_overrun_cycle(
             continue
 
         previous = registry.latest_reconciliation(original_task.task_id)
-        task, browser, lsm, workspace, assessment = _assessment(
-            registry,
-            original_task.task_id,
-            adapter,
-            workspace_probe,
-            policy=None,
-            reconcile_workspace=True,
-            refresh_uia=False,
-        )
+        try:
+            task, browser, lsm, workspace, assessment = _assessment(
+                registry,
+                original_task.task_id,
+                adapter,
+                workspace_probe,
+                policy=None,
+                reconcile_workspace=True,
+                refresh_uia=False,
+            )
+        except UnsupportedLsmState:
+            raise
+        except Exception as exc:
+            detail = f"overrun task reconciliation failed: {type(exc).__name__}: {exc}"
+            registry.record_recovery_event(
+                original_task.task_id,
+                action="watchdog_overrun_error",
+                safe_to_dispatch=False,
+                reason=detail,
+                payload={"error_type": type(exc).__name__},
+            )
+            results.append({
+                "task_id": original_task.task_id,
+                "kind": "overrun_dispatch",
+                "submitted": False,
+                "detail": detail,
+            })
+            continue
         current = _record_current_reconciliation(
             registry,
             task,
@@ -2825,15 +2886,17 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                     return 4
+            def _keepalive() -> None:
+                if lease_acquired and not registry.heartbeat_watchdog_lease(
+                    name=lease_name,
+                    owner_id=lease_owner,
+                    ttl_s=lease_ttl,
+                ):
+                    raise WatchdogLeaseLost("singleton watchdog lease can no longer be renewed")
+
             try:
                 while True:
-                    if lease_acquired and not registry.heartbeat_watchdog_lease(
-                        name=lease_name,
-                        owner_id=lease_owner,
-                        ttl_s=lease_ttl,
-                    ):
-                        print("watchdog lease lost; exiting to prevent duplicate control", file=sys.stderr)
-                        return 5
+                    _keepalive()
                     queue = _scan_attention(
                         registry,
                         adapter,
@@ -2841,6 +2904,7 @@ def main(argv: list[str] | None = None) -> int:
                         policy,
                         uia_probe=ChromeUiaProbe() if args.uia else None,
                         refresh_uia=args.uia,
+                        keepalive=_keepalive,
                     )
                     signature = _attention_signature(queue)
                     if args.once or signature != last_signature:
@@ -2857,6 +2921,7 @@ def main(argv: list[str] | None = None) -> int:
                                 overrun_after_s=max(1.0, float(args.overrun_after)),
                                 auto_discover_visible_conversations=True,
                             ),
+                            keepalive=_keepalive,
                         )
                     overrun_side_effect = any(
                         bool(item.get("submitted")) or bool(item.get("side_effect_possible"))
@@ -2869,10 +2934,15 @@ def main(argv: list[str] | None = None) -> int:
                             workspace_probe,
                             queue,
                             policy=TimeoutRecoveryPolicy(enabled=True),
+                            keepalive=_keepalive,
                         )
                     if args.once:
                         return 0
+                    _keepalive()
                     time.sleep(interval)
+            except WatchdogLeaseLost as exc:
+                print(f"watchdog lease lost; exiting to prevent duplicate control: {exc}", file=sys.stderr)
+                return 5
             except KeyboardInterrupt:
                 return 0
             finally:
