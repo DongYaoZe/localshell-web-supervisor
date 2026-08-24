@@ -30,6 +30,7 @@ from .dispatch_runtime import (
 from .doctor import DoctorStatus, run_doctor
 from .cdp import CdpNetworkProbe, CdpProbeUnavailable
 from .child_batch import advance_child_dispatch_batch, default_transport_factory
+from .chat_dispatch import run_chat_dispatch_worker
 from .child_spawn import (
     ChildSpawnBlocked,
     ChromeUiaChildSpawnTransport,
@@ -264,6 +265,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not close exact terminal child pages after all children have been dispatched",
     )
     child_dispatch_batch.add_argument("--json", action="store_true")
+
+    chat_dispatch_worker = sub.add_parser(
+        "chat-dispatch-worker",
+        help=argparse.SUPPRESS,
+    )
+    chat_dispatch_worker.add_argument("--queue-db", required=True)
+    chat_dispatch_worker.add_argument("--max-windows", type=int, default=4)
+    chat_dispatch_worker.add_argument("--idle-close", type=float, default=90.0)
+    chat_dispatch_worker.add_argument("--poll", type=float, default=1.0)
 
     replacement_register = sub.add_parser(
         "replacement-register",
@@ -1617,6 +1627,13 @@ def _child_create_contract(args) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "chat-dispatch-worker":
+        return run_chat_dispatch_worker(
+            db_path=args.queue_db,
+            max_windows=args.max_windows,
+            idle_close_s=args.idle_close,
+            poll_s=args.poll,
+        )
     registry = Registry(args.db or default_db_path())
     adapter = _adapter(args)
     workspace_probe = WorkspaceProbe(git_bin=args.git_bin)

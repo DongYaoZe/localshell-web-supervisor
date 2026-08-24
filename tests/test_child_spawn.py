@@ -5,6 +5,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lws.child_spawn import (
+    _CLOSE_OWNED_PROJECT_SCRIPT,
+    _DELIVERY_OBSERVE_SCRIPT,
+    _INVOKE_EXISTING_DRAFT_SCRIPT,
+    _NAVIGATE_EXACT_WINDOW_SCRIPT,
     ChildSpawnBlocked,
     ChildSpawnExecution,
     ChromeUiaChildSpawnTransport,
@@ -526,6 +530,17 @@ class ChildSpawnTests(unittest.TestCase):
             self.assertEqual(migrated.get_child_dispatch("c8").web_project_url, PROJECT)
         finally:
             migrated.close()
+
+    def test_powershell_helpers_do_not_assign_reserved_pid_variable(self):
+        scripts = (
+            _DELIVERY_OBSERVE_SCRIPT,
+            _INVOKE_EXISTING_DRAFT_SCRIPT,
+            _NAVIGATE_EXACT_WINDOW_SCRIPT,
+            _CLOSE_OWNED_PROJECT_SCRIPT,
+        )
+        for script in scripts:
+            self.assertNotIn("$pid=[int]", script.lower())
+            self.assertIn("$actualpid=[int]", script.lower())
 
     @patch("lws.child_spawn.os.name", "nt")
     @patch("lws.child_spawn._run_ps")

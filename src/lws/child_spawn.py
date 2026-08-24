@@ -103,12 +103,12 @@ $expectedExe=[string]$env:LWS_EXPECTED_CHROME_EXE
 try{$w=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$hwnd)}catch{$w=$null}
 if(-not $w){$obj=[pscustomobject]@{present=$false;ambiguous=$false;detail='bound delivery window absent'}}
 else{
-  $pid=[int]$w.Current.ProcessId
-  try{$proc=Get-Process -Id $pid -ErrorAction Stop}catch{$proc=$null}
+  $actualPid=[int]$w.Current.ProcessId
+  try{$proc=Get-Process -Id $actualPid -ErrorAction Stop}catch{$proc=$null}
   $bar=Find-ByAutomationId $w 'view_1012'
   $address=if($bar){Get-Value $bar}else{$null}
   if($address -and -not $address.StartsWith('http')){$address='https://'+$address}
-  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $pid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase)){
+  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $actualPid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase)){
     $obj=[pscustomobject]@{present=$false;ambiguous=$true;detail='bound delivery HWND/PID/executable identity changed'}
   } elseif(-not $address){
     $obj=[pscustomobject]@{present=$true;ambiguous=$true;detail='bound delivery address unavailable'}
@@ -150,12 +150,12 @@ $prompt=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:LWS_PRO
 try{$w=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$hwnd)}catch{$w=$null}
 if(-not $w){$obj=[pscustomobject]@{submitted=$false;side_effect_possible=$false;detail='second-stage HWND absent'}}
 else{
-  $pid=[int]$w.Current.ProcessId
-  try{$proc=Get-Process -Id $pid -ErrorAction Stop}catch{$proc=$null}
+  $actualPid=[int]$w.Current.ProcessId
+  try{$proc=Get-Process -Id $actualPid -ErrorAction Stop}catch{$proc=$null}
   $bar=Find-ByAutomationId $w 'view_1012'
   $address=if($bar){Get-Value $bar}else{$null}
   if($address -and -not $address.StartsWith('http')){$address='https://'+$address}
-  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $pid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase) -or $address.TrimEnd('/') -ne $expectedUrl.TrimEnd('/')){
+  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $actualPid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase) -or $address.TrimEnd('/') -ne $expectedUrl.TrimEnd('/')){
     $obj=[pscustomobject]@{submitted=$false;side_effect_possible=$false;detail='second-stage exact window identity changed'}
   } else {
     $docCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Document)
@@ -527,12 +527,12 @@ $target=[string]$env:LWS_TARGET_URL
 try{$w=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$hwnd)}catch{$w=$null}
 if(-not $w){$obj=[pscustomobject]@{changed=$false;ambiguous=$false;detail='dispatcher HWND absent'}}
 else{
-  $pid=[int]$w.Current.ProcessId
-  try{$proc=Get-Process -Id $pid -ErrorAction Stop}catch{$proc=$null}
+  $actualPid=[int]$w.Current.ProcessId
+  try{$proc=Get-Process -Id $actualPid -ErrorAction Stop}catch{$proc=$null}
   $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'view_1012')
   $bar=$w.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond)
   $cur=if($bar){Norm (Get-Value $bar)}else{''}
-  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $pid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase)){
+  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $actualPid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase)){
     $obj=[pscustomobject]@{changed=$false;ambiguous=$true;detail='dispatcher HWND/PID/executable identity changed'}
   } elseif($cur -ne $source){
     $obj=[pscustomobject]@{changed=$false;ambiguous=$true;detail='dispatcher source URL changed'}
@@ -576,12 +576,12 @@ if($env:LWS_EXPECTED_URL_2){$expected+=Norm $env:LWS_EXPECTED_URL_2}
 try{$w=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$hwnd)}catch{$w=$null}
 if(-not $w){$obj=[pscustomobject]@{closed=$false;absent=$true;ambiguous=$false;detail='exact child window already absent'}}
 else{
-  $pid=[int]$w.Current.ProcessId
-  try{$proc=Get-Process -Id $pid -ErrorAction Stop}catch{$proc=$null}
+  $actualPid=[int]$w.Current.ProcessId
+  try{$proc=Get-Process -Id $actualPid -ErrorAction Stop}catch{$proc=$null}
   $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'view_1012')
   $bar=$w.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond)
   $cur=if($bar){Norm (Get-Value $bar)}else{''}
-  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $pid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase) -or -not ($expected -contains $cur)){
+  if([string]$w.Current.ClassName -ne 'Chrome_WidgetWin_1' -or $actualPid -ne $pidExpected -or -not $proc -or -not ([string]$proc.Path).Equals($expectedExe,[StringComparison]::OrdinalIgnoreCase) -or -not ($expected -contains $cur)){
     $obj=[pscustomobject]@{closed=$false;absent=$false;ambiguous=$true;detail='exact child window close identity changed'}
   } else {
     try{$wp=$w.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern);$wp.Close();$obj=[pscustomobject]@{closed=$true;absent=$false;ambiguous=$false;detail='exact LWS child window close requested'}}
