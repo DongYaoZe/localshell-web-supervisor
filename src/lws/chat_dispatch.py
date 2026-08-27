@@ -738,11 +738,18 @@ class ChatDispatchStore:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             row = self._conn.execute(
-                "SELECT owner_id, expires_at FROM chat_dispatch_leases WHERE name='default'"
+                "SELECT owner_id, pid, expires_at FROM chat_dispatch_leases WHERE name='default'"
             ).fetchone()
-            if row is not None and float(row["expires_at"]) > current and str(row["owner_id"]) != owner_id:
-                self._conn.rollback()
-                return False
+            if row is not None and str(row["owner_id"]) != owner_id:
+                lease_is_fresh = float(row["expires_at"]) > current
+                lease_pid = int(row["pid"] or 0)
+                lease_process_alive = lease_pid > 0 and pid_exists(lease_pid)
+                if lease_is_fresh or lease_process_alive:
+                    # TTL expiry alone is not authority to replace a process that can still
+                    # perform browser side effects. A stalled live worker must be stopped or
+                    # reconciled explicitly before a new owner is allowed to take over.
+                    self._conn.rollback()
+                    return False
             self._conn.execute(
                 """INSERT INTO chat_dispatch_leases
                    (name, owner_id, pid, heartbeat_at, expires_at, max_windows, idle_close_s)

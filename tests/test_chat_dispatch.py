@@ -2,6 +2,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lws.chat_dispatch import (
     BrowserAckResult,
@@ -323,6 +324,50 @@ class ChatDispatchTests(unittest.TestCase):
         self.store._conn.commit()
         self.assertTrue(self.engine.should_exit())
         self.assertEqual(self.browser.close_calls, 0)
+
+
+class ChatDispatchLeaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = ChatDispatchStore(Path(self.tmp.name) / "queue.sqlite3")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    @patch("lws.chat_dispatch.pid_exists", return_value=True)
+    def test_expired_live_worker_lease_cannot_be_replaced(self, pid_exists):
+        self.assertTrue(
+            self.store.acquire_lease(
+                owner_id="old", pid=111, max_windows=2, idle_close_s=30, now=100
+            )
+        )
+
+        acquired = self.store.acquire_lease(
+            owner_id="new", pid=222, max_windows=2, idle_close_s=30, now=200
+        )
+
+        self.assertFalse(acquired)
+        self.assertEqual(self.store.lease()["owner_id"], "old")
+        pid_exists.assert_called_once_with(111)
+
+    @patch("lws.chat_dispatch.pid_exists", return_value=False)
+    def test_expired_dead_worker_lease_can_be_replaced(self, pid_exists):
+        self.assertTrue(
+            self.store.acquire_lease(
+                owner_id="old", pid=111, max_windows=2, idle_close_s=30, now=100
+            )
+        )
+
+        acquired = self.store.acquire_lease(
+            owner_id="new", pid=222, max_windows=3, idle_close_s=45, now=200
+        )
+
+        self.assertTrue(acquired)
+        lease = self.store.lease()
+        self.assertEqual(lease["owner_id"], "new")
+        self.assertEqual(lease["pid"], 222)
+        pid_exists.assert_called_once_with(111)
 
 
 if __name__ == "__main__":
