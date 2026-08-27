@@ -367,13 +367,8 @@ class ChatDispatchStore:
             raise ValueError("conversation_url must be a ChatGPT /c/ conversation URL")
         if project_url:
             web_project_id(project_url)
-        key = str(conversation_key or "").strip()
-        if not key:
-            if conversation_url:
-                key = f"conversation:{conversation_id_from_url(conversation_url)}"
-            else:
-                key = f"new:{uuid.uuid4().hex[:16]}"
-        if len(key) > 200:
+        requested_key = str(conversation_key or "").strip()
+        if len(requested_key) > 200:
             raise ValueError("conversation_key must be <= 200 characters")
         dispatch_key = str(dispatch_key).strip() if dispatch_key else None
         if dispatch_key and len(dispatch_key) > 240:
@@ -381,6 +376,38 @@ class ChatDispatchStore:
 
         self._conn.execute("BEGIN IMMEDIATE")
         try:
+            if dispatch_key:
+                existing = self._conn.execute(
+                    "SELECT * FROM chat_dispatch_jobs WHERE dispatch_key=?", (dispatch_key,)
+                ).fetchone()
+                if existing is not None:
+                    job = _job_from_row(existing)
+                    expected = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+                    project_changed = bool(
+                        project_url
+                        and job.project_url
+                        and web_project_id(project_url) != web_project_id(job.project_url)
+                    )
+                    if (
+                        job.prompt_sha256 != expected
+                        or (requested_key and job.conversation_key != requested_key)
+                        or (
+                            conversation_url
+                            and job.conversation_url
+                            and not conversation_url_matches(job.conversation_url, conversation_url)
+                        )
+                        or project_changed
+                    ):
+                        raise ValueError("dispatch_key already exists for a different dispatch")
+                    self._conn.rollback()
+                    return job
+
+            key = requested_key
+            if not key:
+                if conversation_url:
+                    key = f"conversation:{conversation_id_from_url(conversation_url)}"
+                else:
+                    key = f"new:{uuid.uuid4().hex[:16]}"
             known = self._conn.execute(
                 "SELECT conversation_url, project_url FROM chat_conversations WHERE conversation_key=?",
                 (key,),
@@ -397,22 +424,6 @@ class ChatDispatchStore:
                 raise ValueError(
                     "new conversation dispatch requires project_url unless conversation_key is already resolved"
                 )
-            if dispatch_key:
-                existing = self._conn.execute(
-                    "SELECT * FROM chat_dispatch_jobs WHERE dispatch_key=?", (dispatch_key,)
-                ).fetchone()
-                if existing is not None:
-                    job = _job_from_row(existing)
-                    expected = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-                    if (
-                        job.prompt_sha256 != expected
-                        or job.conversation_key != key
-                        or (conversation_url and job.conversation_url and not conversation_url_matches(job.conversation_url, conversation_url))
-                    ):
-                        raise ValueError("dispatch_key already exists for a different dispatch")
-                    self._conn.rollback()
-                    return job
-
             self._conn.execute(
                 """INSERT INTO chat_conversations
                    (conversation_key, conversation_url, project_url, created_at, updated_at)

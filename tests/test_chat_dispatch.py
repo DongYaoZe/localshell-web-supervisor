@@ -131,6 +131,21 @@ class ChatDispatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.enqueue_existing(idem="request-1", prompt="different")
 
+    def test_idempotency_key_replays_new_conversation_without_explicit_key(self):
+        first = self.store.enqueue(
+            prompt="new child",
+            project_url=PROJECT,
+            dispatch_key="request-new-1",
+        )
+        second = self.store.enqueue(
+            prompt="new child",
+            project_url=PROJECT,
+            dispatch_key="request-new-1",
+        )
+
+        self.assertEqual(first.dispatch_id, second.dispatch_id)
+        self.assertEqual(first.conversation_key, second.conversation_key)
+
     def test_borrowed_existing_page_is_sent_acknowledged_and_never_closed(self):
         borrowed = self.browser._identity(URL1, owned=False)
         self.browser.visible[URL1] = borrowed
